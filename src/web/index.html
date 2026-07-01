@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>vdb.rs server</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>vdb.rs</h1>
+        <p>IVF_RaBitQ vector retrieval engine</p>
+        <section>
+            <h2>Vector Search</h2>
+            <button id="load-example">Load 768d example</button>
+            <textarea id="query" rows="4" placeholder="[0.1, 0.2, ...]"></textarea>
+            <button id="search">Search</button>
+            <pre id="search-result"></pre>
+        </section>
+        <section>
+            <h2>Benchmark</h2>
+            <button id="run-benchmark">Run Benchmark</button>
+            <pre id="benchmark-result"></pre>
+        </section>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>

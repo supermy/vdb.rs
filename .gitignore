@@ -1,0 +1,19 @@
+# Rust
+/target
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+.DS_Store
+
+# Test / benchmark artifacts
+/reports/lancedb_siftsmall
+lcov.info
+coverage.json
+*.lcov
+
+# Python environment artifacts
+__pycache__
+*.pyc

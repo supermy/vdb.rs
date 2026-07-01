@@ -1,0 +1,83 @@
+[
+  {
+    "system": "FAISS IVF_FLAT",
+    "nprobe": 16,
+    "recall_at_10": 0.997,
+    "qps": 16451.2,
+    "p50_ms": 0.06,
+    "p99_ms": 0.083,
+    "build_time_ms": 81.1
+  },
+  {
+    "system": "FAISS IVF_FLAT",
+    "nprobe": 50,
+    "recall_at_10": 1.0,
+    "qps": 6026.4,
+    "p50_ms": 0.164,
+    "p99_ms": 0.32,
+    "build_time_ms": 81.1
+  },
+  {
+    "system": "FAISS IVF_FLAT",
+    "nprobe": 100,
+    "recall_at_10": 1.0,
+    "qps": 2314.3,
+    "p50_ms": 0.382,
+    "p99_ms": 0.797,
+    "build_time_ms": 81.1
+  },
+  {
+    "system": "FAISS IVF_PQ",
+    "nprobe": 16,
+    "recall_at_10": 0.756,
+    "qps": 12720.7,
+    "p50_ms": 0.068,
+    "p99_ms": 0.262,
+    "build_time_ms": 730.2
+  },
+  {
+    "system": "FAISS IVF_PQ",
+    "nprobe": 50,
+    "recall_at_10": 0.757,
+    "qps": 6752.9,
+    "p50_ms": 0.144,
+    "p99_ms": 0.222,
+    "build_time_ms": 730.2
+  },
+  {
+    "system": "FAISS IVF_PQ",
+    "nprobe": 100,
+    "recall_at_10": 0.757,
+    "qps": 3251.6,
+    "p50_ms": 0.268,
+    "p99_ms": 0.733,
+    "build_time_ms": 730.2
+  },
+  {
+    "system": "LanceDB IVF_PQ",
+    "nprobe": 16,
+    "recall_at_10": 0.995,
+    "qps": 102.7,
+    "p50_ms": 9.594,
+    "p99_ms": 11.631,
+    "build_time_ms": 7776.0
+  },
+  {
+    "system": "LanceDB IVF_PQ",
+    "nprobe": 50,
+    "recall_at_10": 1.0,
+    "qps": 80.2,
+    "p50_ms": 12.285,
+    "p99_ms": 14.703,
+    "build_time_ms": 7776.0
+  },
+  {
+    "system": "LanceDB IVF_PQ",
+    "nprobe": 100,
+    "recall_at_10": 1.0,
+    "qps": 61.2,
+    "p50_ms": 16.151,
+    "p99_ms": 18.678,
+    "build_time_ms": 7776.0
+  }
+]

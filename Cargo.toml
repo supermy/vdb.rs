@@ -1,0 +1,58 @@
+[package]
+name = "vdb-rs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["vdb.rs contributors"]
+description = "Single-machine billion-scale vector retrieval engine based on IVF_RaBitQ"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/vdb-rs/vdb.rs"
+
+[[bin]]
+name = "vdb"
+path = "src/cli.rs"
+
+[[bin]]
+name = "vdb-server"
+path = "src/server.rs"
+
+[[bin]]
+name = "vdb-nng-server"
+path = "src/nng_server.rs"
+
+[[bin]]
+name = "vdb-benchmark"
+path = "src/benchmark.rs"
+
+[dependencies]
+# 最小依赖集，随阶段逐步引入
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+log = "0.4"
+env_logger = "0.11"
+clap = { version = "4.5", features = ["derive"] }
+libc = "0.2"
+
+[features]
+default = ["gpu"]
+# 关闭 GPU 支持：完全依赖 CPU SIMD，减小二进制并避免未来 GPU SDK 链接。
+gpu = []
+
+[build-dependencies]
+pkg-config = "0.3"
+vcpkg = "0.2"
+
+[dev-dependencies]
+tempfile = "3.10"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = true
