@@ -24,12 +24,17 @@
 - 八层测试体系：`tests/unit.rs`、`tests/integration.rs`、`tests/smoke.rs`、`tests/regression.rs`、`tests/acceptance.rs`、`tests/system.rs`、`tests/e2e.rs`、`tests/server.rs`。
 - `AGENTS.md`：项目代理指令与架构、质量、生产部署规则。
 - 常见使用场景示例：`examples/embedded.rs`、`examples/mmap_zero_copy.rs`、`examples/server_http.rs`、`examples/nng_client.rs`、`examples/best_performance.rs`，覆盖嵌入式、mmap 零拷贝、HTTP Server、NNG 二进制协议与最佳性能配置。
+- `src/sys_info.rs`：系统资源探测（CPU 核心数、物理内存）与检索参数推荐，提供 `recommend_search_options`、`recommend_num_partitions`、`recommend_mmap_cache_bytes`。
+- CLI 完整实现：`vdb create`、`vdb insert`、`vdb search`、`vdb tune`，支持 payload、SQL 过滤与自动参数推荐。
+- HTTP Server 支持服务器级默认搜索参数：`--default-k`、`--default-nprobe`、`--default-refine-k`、`--default-query-bits` 等，请求体可继续覆盖；`/search` 新增 `fastscan`、`query_bits`、`sq8_refine` 字段。
+- NNG Server 支持 `--listen` 与 `--dim` 启动参数，消除硬编码地址与维度。
+- `.github/workflows/ci.yml` 新增 `release` job：在 `v*` 标签推送时自动构建 Ubuntu/macOS/Windows release 二进制并上传至 GitHub Release。
 
 ### Changed
 
 - `benchmark.rs` 新增 `--refine-k` 参数，允许调节精排候选数以提升召回率。
 - `TODOS.md` 各阶段任务状态同步：SQ8、Query Quantization、R*centroid、mmap 按需加载、POSIX socket 迁移、libevent HTTP 优化、覆盖率与 CI 配置等标记为完成。
-- `Cargo.toml` 与 `README.md` 仓库链接更新为 `https://github.com/supermy/vdb-rs`。
+- `Cargo.toml` 与 `README.md` 仓库链接更新为 `https://github.com/supermy/vdb.rs`。
 - `README.md` 重写：补充定位、特性矩阵、真实数据集测试、API 速览、生产部署建议、性能目标与对标。
 
 ### Fixed

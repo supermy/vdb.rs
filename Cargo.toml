@@ -6,7 +6,7 @@ rust-version = "1.85"
 authors = ["vdb.rs contributors"]
 description = "Single-machine billion-scale vector retrieval engine based on IVF_RaBitQ"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/supermy/vdb-rs"
+repository = "https://github.com/supermy/vdb.rs"
 
 [[bin]]
 name = "vdb"

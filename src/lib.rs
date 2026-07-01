@@ -13,5 +13,6 @@ pub mod search;
 pub mod simd;
 pub mod sql;
 pub mod storage;
+pub mod sys_info;
 pub mod thread_pool;
 pub mod vdb;

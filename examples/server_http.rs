@@ -58,10 +58,7 @@ fn main() {
     thread::sleep(Duration::from_millis(100));
 
     // 1. 健康检查 / stats。
-    let resp = http_request(
-        addr,
-        "GET /stats HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n",
-    );
+    let resp = http_request(addr, "GET /stats HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n");
     println!("[http] /stats response:\n{}\n", json_body(&resp));
 
     // 2. 单条插入。
@@ -123,7 +120,9 @@ fn main() {
     println!("[http] SQL /search response: {}\n", json_body(&resp));
 
     // 5. 批量插入。
-    let vectors: Vec<Vec<f32>> = (0..10).map(|_| (0..dim).map(|_| rand::random::<f32>()).collect()).collect();
+    let vectors: Vec<Vec<f32>> = (0..10)
+        .map(|_| (0..dim).map(|_| rand::random::<f32>()).collect())
+        .collect();
     let body = serde_json::json!({ "vectors": vectors }).to_string();
     let resp = http_request(
         addr,

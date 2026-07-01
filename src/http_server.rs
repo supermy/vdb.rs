@@ -6,9 +6,13 @@
 //! 3. 通过 C FFI 调用系统库，符合项目“仅在 Arrow/Tantivy/SIMD 处例外使用 C/FFI”的约束扩展。
 //!
 //! 所有权说明：
-//! - `HttpServer` 持有 `Arc<Mutex<IvfRabitqIndex>>` 与 libevent 句柄。
+//! - `HttpServer` 持有 `Arc<ServerContext>` 与 libevent 句柄。
 //! - 运行期间把 `Arc` 的原始指针作为 evhttp 回调参数；`run` 返回前该 Arc 一直有效。
 //! - 事件循环 `event_base_dispatch` 阻塞当前线程，直到调用 `stop` 触发退出。
+//!
+//! 性能参数：
+//! - 搜索参数可以在请求体中覆盖；未提供时使用 `ServerContext::default_options`，
+//!   方便运维通过命令行设置集群级默认值，避免每个客户端都写死调参。
 
 use crate::index_ivf_rq::{IvfRabitqIndex, Payload};
 use crate::search::{SearchOptions, search};
@@ -114,9 +118,37 @@ unsafe extern "C" {
     fn getsockname(sockfd: c_int, addr: *mut sockaddr, addrlen: *mut socklen_t) -> c_int;
 }
 
+/// 服务器默认搜索参数。未在请求体中显式指定的字段将回退到此处。
+#[derive(Debug, Clone)]
+pub struct ServerOptions {
+    pub search: SearchOptions,
+}
+
+impl Default for ServerOptions {
+    fn default() -> Self {
+        Self {
+            search: SearchOptions {
+                k: 10,
+                nprobe: 50,
+                refine: true,
+                refine_k: 1000,
+                fastscan: true,
+                query_bits: 0,
+                sq8_refine: false,
+                sql_filter: None,
+            },
+        }
+    }
+}
+
+struct ServerContext {
+    index: Arc<Mutex<IvfRabitqIndex>>,
+    options: ServerOptions,
+}
+
 /// HTTP 服务器状态。
 pub struct HttpServer {
-    index: Arc<Mutex<IvfRabitqIndex>>,
+    context: Arc<ServerContext>,
     base: *mut event_base,
     http: *mut evhttp,
     bound: *mut evhttp_bound_socket,
@@ -124,6 +156,10 @@ pub struct HttpServer {
 
 impl HttpServer {
     pub fn new(index: IvfRabitqIndex) -> Self {
+        Self::new_with_options(index, ServerOptions::default())
+    }
+
+    pub fn new_with_options(index: IvfRabitqIndex, options: ServerOptions) -> Self {
         unsafe {
             let base = event_base_new();
             assert!(!base.is_null(), "event_base_new failed");
@@ -140,7 +176,10 @@ impl HttpServer {
             evhttp_set_timeout(http, HTTP_TIMEOUT_SECS);
 
             Self {
-                index: Arc::new(Mutex::new(index)),
+                context: Arc::new(ServerContext {
+                    index: Arc::new(Mutex::new(index)),
+                    options,
+                }),
                 base,
                 http,
                 bound: ptr::null_mut(),
@@ -185,20 +224,17 @@ impl HttpServer {
 
     /// 启动事件循环。
     ///
-    /// 把 `Arc<Mutex<IvfRabitqIndex>>` 的原始指针传给回调；
+    /// 把 `Arc<ServerContext>` 的原始指针传给回调；
     /// `run` 返回前该 Arc 一直存活，因此指针有效。
     pub fn run(&self) -> std::io::Result<()> {
         unsafe {
-            // 在堆上分配一份 Arc 克隆，把指向该 Arc 的指针传给 C 回调。
-            // 这样回调拿到的是 *const Arc<Mutex<IvfRabitqIndex>>，
-            // 而不是 Arc::into_raw 返回的 *const Mutex；后者会被错误解引用为 Arc。
-            let index_arc = Box::new(Arc::clone(&self.index));
-            let index_ptr = Box::into_raw(index_arc) as *mut c_void;
-            evhttp_set_gencb(self.http, Some(http_generic_callback), index_ptr);
+            let context_arc = Box::new(Arc::clone(&self.context));
+            let context_ptr = Box::into_raw(context_arc) as *mut c_void;
+            evhttp_set_gencb(self.http, Some(http_generic_callback), context_ptr);
 
             let ret = event_base_dispatch(self.base);
             // 回收堆上的 Arc，避免泄漏。
-            let _ = Box::from_raw(index_ptr as *mut Arc<Mutex<IvfRabitqIndex>>);
+            let _ = Box::from_raw(context_ptr as *mut Arc<ServerContext>);
             if ret == 0 {
                 Ok(())
             } else {
@@ -229,7 +265,7 @@ impl HttpServer {
 // - `bound` 在 bind 后只读。
 // - `stop` 使用 libevent 的 `event_base_loopexit`，该函数设计为可从其他线程安全调用，
 //   内部通过唤醒机制通知事件循环退出。
-// - `index` 本身是 `Arc<Mutex<...>>`，已保证线程安全。
+// - `context` 本身是 `Arc<Mutex<...>>`，已保证线程安全。
 // 因此外部可以将 HttpServer 移动/共享给运行事件循环的线程与调用 stop 的线程。
 unsafe impl Send for HttpServer {}
 unsafe impl Sync for HttpServer {}
@@ -252,7 +288,9 @@ unsafe extern "C" fn http_generic_callback(req: *mut evhttp_request, arg: *mut c
         if req.is_null() {
             return;
         }
-        let index = &*(arg as *const Arc<Mutex<IvfRabitqIndex>>);
+        let context = &*(arg as *const Arc<ServerContext>);
+        let index = &context.index;
+        let defaults = &context.options.search;
 
         let method = evhttp_request_get_command(req);
         let uri = CStr::from_ptr(evhttp_request_get_uri(req))
@@ -283,7 +321,9 @@ unsafe extern "C" fn http_generic_callback(req: *mut evhttp_request, arg: *mut c
             m if m == EVHTTP_REQ_GET && uri == "/style.css" => {
                 (200, "text/css".to_string(), STYLE_CSS.as_bytes().to_vec())
             }
-            m if m == EVHTTP_REQ_POST && uri == "/search" => handle_search(index, &body_str),
+            m if m == EVHTTP_REQ_POST && uri == "/search" => {
+                handle_search(index, defaults, &body_str)
+            }
             m if m == EVHTTP_REQ_POST && uri == "/insert" => handle_insert(index, &body_str),
             m if m == EVHTTP_REQ_POST && uri == "/batch_insert" => {
                 handle_batch_insert(index, &body_str)
@@ -394,31 +434,29 @@ fn status_reason(status: u16) -> &'static str {
 #[derive(Debug, Deserialize)]
 struct SearchRequest {
     query: Vec<f32>,
-    #[serde(default = "default_k")]
-    k: usize,
     #[serde(default)]
-    nprobe: usize,
-    #[serde(default = "default_refine")]
-    refine: bool,
-    #[serde(default = "default_refine_k")]
-    refine_k: usize,
+    k: Option<usize>,
+    #[serde(default)]
+    nprobe: Option<usize>,
+    #[serde(default)]
+    refine: Option<bool>,
+    #[serde(default)]
+    refine_k: Option<usize>,
+    #[serde(default)]
+    fastscan: Option<bool>,
+    #[serde(default)]
+    query_bits: Option<u8>,
+    #[serde(default)]
+    sq8_refine: Option<bool>,
     #[serde(default)]
     sql_filter: Option<String>,
 }
 
-fn default_k() -> usize {
-    10
-}
-
-fn default_refine() -> bool {
-    true
-}
-
-fn default_refine_k() -> usize {
-    100
-}
-
-fn handle_search(index: &Arc<Mutex<IvfRabitqIndex>>, body: &str) -> (u16, String, Vec<u8>) {
+fn handle_search(
+    index: &Arc<Mutex<IvfRabitqIndex>>,
+    defaults: &SearchOptions,
+    body: &str,
+) -> (u16, String, Vec<u8>) {
     let req: SearchRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => {
@@ -426,20 +464,21 @@ fn handle_search(index: &Arc<Mutex<IvfRabitqIndex>>, body: &str) -> (u16, String
         }
     };
 
-    let k = req.k.min(MAX_K);
+    let k = req.k.unwrap_or(defaults.k).min(MAX_K);
     if k == 0 {
         return json_response(400, &serde_json::json!({ "error": "k must be > 0" }));
     }
 
+    // 请求级参数覆盖服务器默认值；均未指定时回退到默认值。
     let options = SearchOptions {
         k,
-        nprobe: req.nprobe,
-        refine: req.refine,
-        refine_k: req.refine_k,
-        fastscan: true,
-        query_bits: 0,
-        sq8_refine: false,
-        sql_filter: req.sql_filter,
+        nprobe: req.nprobe.unwrap_or(defaults.nprobe),
+        refine: req.refine.unwrap_or(defaults.refine),
+        refine_k: req.refine_k.unwrap_or(defaults.refine_k),
+        fastscan: req.fastscan.unwrap_or(defaults.fastscan),
+        query_bits: req.query_bits.unwrap_or(defaults.query_bits),
+        sq8_refine: req.sq8_refine.unwrap_or(defaults.sq8_refine),
+        sql_filter: req.sql_filter.or_else(|| defaults.sql_filter.clone()),
     };
 
     let idx = index.lock().unwrap();

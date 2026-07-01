@@ -10,12 +10,16 @@
 //! - Unix 使用 POSIX socket 直接系统调用（socket/bind/listen/accept/read/write），
 //!   避免 `std::net` 的额外缓冲与抽象开销，降低延迟。
 //! - Windows 回退到 `std::net`，保证 CI 跨平台编译通过。
+//!
+//! 启动参数：监听地址与向量维度可通过命令行指定，避免源码中硬编码。
 
+use clap::Parser;
 #[cfg(not(unix))]
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
 use vdb_rs::index_ivf_rq::IvfRabitqIndex;
+use vdb_rs::sys_info::{available_parallelism, physical_memory_bytes, recommend_mmap_cache_bytes};
 
 const RESP_OK: u8 = 0x00;
 const RESP_ERR: u8 = 0xFF;
@@ -27,13 +31,43 @@ const CMD_INSERT: u8 = 0x04;
 const CMD_IMPORT_JSON: u8 = 0x05;
 const CMD_EXPORT_JSON: u8 = 0x06;
 
+#[derive(Parser, Debug)]
+#[command(
+    name = "vdb-nng-server",
+    version,
+    about = "vdb.rs NNG binary protocol server"
+)]
+struct Args {
+    /// 监听地址
+    #[arg(long, default_value = "0.0.0.0:9090")]
+    listen: String,
+
+    /// 向量维度
+    #[arg(long, default_value_t = 64)]
+    dim: usize,
+}
+
 fn main() -> std::io::Result<()> {
     // untested: nng-server 为独立二进制入口，生命周期由监听循环持有，单元测试仅覆盖序列化函数。
-    run_server("0.0.0.0:9090")
+    let args = Args::parse();
+    eprintln!(
+        "vdb-nng-server starting on {} dim={} cpus={}",
+        args.listen,
+        args.dim,
+        available_parallelism()
+    );
+    if let Some(mem) = physical_memory_bytes() {
+        eprintln!(
+            "physical memory={:.2} GiB recommended mmap cache={:.2} GiB",
+            mem as f64 / (1024.0 * 1024.0 * 1024.0),
+            recommend_mmap_cache_bytes(mem) as f64 / (1024.0 * 1024.0 * 1024.0)
+        );
+    }
+    run_server(&args.listen, args.dim)
 }
 
 #[cfg(unix)]
-fn run_server(addr: &str) -> std::io::Result<()> {
+fn run_server(addr: &str, dim: usize) -> std::io::Result<()> {
     use libc::{
         AF_INET, INADDR_ANY, SO_REUSEADDR, SOCK_STREAM, SOL_SOCKET, accept, bind, close, htons,
         listen, setsockopt, sockaddr_in, socket, socklen_t,
@@ -97,7 +131,7 @@ fn run_server(addr: &str) -> std::io::Result<()> {
 
         eprintln!("vdb-nng-server listening on tcp://{}", addr);
 
-        let index = Arc::new(Mutex::new(IvfRabitqIndex::new(64)));
+        let index = Arc::new(Mutex::new(IvfRabitqIndex::new(dim)));
 
         loop {
             let mut client_addr: sockaddr_in = std::mem::zeroed();
@@ -225,14 +259,14 @@ fn write_response_posix(
 }
 
 #[cfg(not(unix))]
-fn run_server(addr: &str) -> std::io::Result<()> {
+fn run_server(addr: &str, dim: usize) -> std::io::Result<()> {
     // untested: Windows 回退路径未在 CI 矩阵覆盖，仅保证编译通过。
     use std::net::TcpListener;
 
     let listener = TcpListener::bind(addr)?;
     eprintln!("vdb-nng-server listening on tcp://{}", addr);
 
-    let index = Arc::new(Mutex::new(IvfRabitqIndex::new(64)));
+    let index = Arc::new(Mutex::new(IvfRabitqIndex::new(dim)));
 
     for stream in listener.incoming() {
         match stream {

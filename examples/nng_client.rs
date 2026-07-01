@@ -36,14 +36,18 @@ fn send_command(stream: &mut TcpStream, cmd: u8, payload: &[u8]) -> Vec<u8> {
     stream.write_all(&msg).expect("failed to send command");
 
     let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf).expect("failed to read response length");
+    stream
+        .read_exact(&mut len_buf)
+        .expect("failed to read response length");
     let resp_len = u32::from_le_bytes(len_buf) as usize;
     if resp_len == 0 || resp_len > 16 * 1024 * 1024 {
         panic!("invalid response length: {}", resp_len);
     }
 
     let mut resp = vec![0u8; resp_len];
-    stream.read_exact(&mut resp).expect("failed to read response body");
+    stream
+        .read_exact(&mut resp)
+        .expect("failed to read response body");
     resp
 }
 

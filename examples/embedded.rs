@@ -29,7 +29,10 @@ fn main() {
     }
 
     let stats = db.stats();
-    println!("[embedded] version={} vectors={} partitions={}", stats.version, stats.num_vectors, stats.num_partitions);
+    println!(
+        "[embedded] version={} vectors={} partitions={}",
+        stats.version, stats.num_vectors, stats.num_partitions
+    );
 
     // 3. 普通向量搜索（推荐生产配置）。
     let query = random_vec(dim);
@@ -44,7 +47,10 @@ fn main() {
         sql_filter: None,
     };
     let results = db.search(&query, &opts);
-    println!("[embedded] top-10 results: {:?}", results.iter().take(3).collect::<Vec<_>>());
+    println!(
+        "[embedded] top-10 results: {:?}",
+        results.iter().take(3).collect::<Vec<_>>()
+    );
 
     // 4. SQL WHERE + 向量搜索联合查询。
     let opts_sql = SearchOptions {

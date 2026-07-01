@@ -10,7 +10,7 @@
 
 use std::time::Instant;
 use vdb_rs::index_ivf_rq::IvfRabitqIndex;
-use vdb_rs::search::{search, SearchOptions};
+use vdb_rs::search::{SearchOptions, search};
 
 fn random_vec(dim: usize) -> Vec<f32> {
     // 近似高斯分布，使 k-means 分区更有意义。
@@ -24,8 +24,13 @@ fn random_vec(dim: usize) -> Vec<f32> {
 }
 
 fn recall_at_k(results: &[(u64, f32)], truth: &[(u64, f32)], k: usize) -> f32 {
-    let truth_ids: std::collections::HashSet<u64> = truth.iter().take(k).map(|(id, _)| *id).collect();
-    let hit = results.iter().take(k).filter(|(id, _)| truth_ids.contains(id)).count();
+    let truth_ids: std::collections::HashSet<u64> =
+        truth.iter().take(k).map(|(id, _)| *id).collect();
+    let hit = results
+        .iter()
+        .take(k)
+        .filter(|(id, _)| truth_ids.contains(id))
+        .count();
     hit as f32 / k.min(truth_ids.len()).max(1) as f32
 }
 
@@ -76,10 +81,7 @@ fn main() {
     );
 
     let queries: Vec<Vec<f32>> = (0..n_queries).map(|_| random_vec(dim)).collect();
-    let truth: Vec<Vec<(u64, f32)>> = queries
-        .iter()
-        .map(|q| index.flat_search(q, k))
-        .collect();
+    let truth: Vec<Vec<(u64, f32)>> = queries.iter().map(|q| index.flat_search(q, k)).collect();
 
     println!("\n[perf] latency-optimized configurations");
     bench_config(

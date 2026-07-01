@@ -38,7 +38,10 @@ fn main() {
 
     let query = random_vec(dim);
     let results = mmap_db.search(&query, 10, 100);
-    println!("[mmap] top-10 results: {:?}", results.iter().take(3).collect::<Vec<_>>());
+    println!(
+        "[mmap] top-10 results: {:?}",
+        results.iter().take(3).collect::<Vec<_>>()
+    );
 }
 
 #[cfg(not(unix))]
