@@ -327,18 +327,6 @@ chmod +x examples/performance_benchmark.sh
 DIM=128 N=50000 K=10 QUERIES=200 ./examples/performance_benchmark.sh
 ```
 
-`examples/siftsmall_benchmark.sh` 是真实数据集（siftsmall）测试示例，验证 README 中的目标配置：
-
-```bash
-chmod +x examples/siftsmall_benchmark.sh
-./examples/siftsmall_benchmark.sh
-
-# 自定义数据集路径
-DATASET_PREFIX=/path/to/siftsmall/siftsmall ./examples/siftsmall_benchmark.sh
-```
-
-该脚本会依次运行 exact / latency / balanced-high-recall / high-recall / extreme-recall 五组配置，其中 `nprobe=16, refine_k=5000` 即 README 实测的 `Recall@10 ≈ 0.994, QPS ≈ 1400` 配置。
-
 输出示例：
 
 ```text
@@ -400,6 +388,55 @@ cargo run --bin vdb -- tune --n 100000 --k 10
 ```
 
 `tune` 会输出 CPU 核心数、物理内存、推荐 mmap 缓存预算，以及极速/平衡/高召回三套参数组合。
+
+### 7. 真实数据集与中文 RAG 示例
+
+`examples/siftsmall_benchmark.sh` 是真实向量数据集（siftsmall）测试示例，验证 README 中的目标配置：
+
+```bash
+chmod +x examples/siftsmall_benchmark.sh
+./examples/siftsmall_benchmark.sh
+
+# 自定义数据集路径
+DATASET_PREFIX=/path/to/siftsmall/siftsmall ./examples/siftsmall_benchmark.sh
+```
+
+该脚本会依次运行 exact / latency / balanced-high-recall / high-recall / extreme-recall 五组配置，其中 `nprobe=16, refine_k=5000` 即 README 实测的 `Recall@10 ≈ 0.994, QPS ≈ 1400` 配置。
+
+`examples/hongloumeng_rag.sh` 演示完整中文文本 RAG 流程：
+1. 读取 `../models/data/txt/红楼梦.txt`（自动处理 GBK/UTF-8 编码）；
+2. 使用本地 `Qwen3-Embedding-0.6B-Q8_0.gguf` 模型将文本块转成 1024 维向量；
+3. 通过 `vdb` CLI 创建数据库并插入带 `text` payload 的向量；
+4. 对查询问题生成向量并在 vdb.rs 中检索 Top3，回显原文片段。
+
+```bash
+# 默认使用 ../models/data/txt/红楼梦.txt 与 ../models/Qwen3-Embedding-0.6B-Q8_0.gguf
+chmod +x examples/hongloumeng_rag.sh
+./examples/hongloumeng_rag.sh
+
+# 自定义输入、模型与规模
+INPUT_TXT=/path/to/红楼梦.txt \
+EMBED_MODEL=/path/to/Qwen3-Embedding-0.6B-Q8_0.gguf \
+LIMIT=500 \
+./examples/hongloumeng_rag.sh
+```
+
+核心辅助脚本：
+- `examples/text_to_vectors.py`：文本分块 + llama-embedding 批量生成向量；
+- `examples/lookup_results.py`：根据搜索 id 从向量文件反查原文。
+
+示例输出：
+
+```text
+--- query: 贾宝玉和林黛玉的关系 ---
+[search] 3 results
+  id=0 distance=0.7903062
+  id=1 distance=0.81977016
+  id=3 distance=0.8335409
+  -> [0] 红楼梦 作者：[清]曹雪芹    简介    以贾宝玉、林黛玉、薛宝钗之间的恋爱婚姻悲剧为主线...
+  -> [1] 落进行了深刻反思，歌颂了封建贵族的叛逆者和自由美好、违反礼教的爱情...
+  -> [3] 虽今日之茅椽蓬牖，瓦灶绳床，其晨夕风露，阶柳庭花，亦未有妨我之襟怀笔墨者...
+```
 
 ## API 速览
 
