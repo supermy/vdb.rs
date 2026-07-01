@@ -307,6 +307,32 @@ print("code", resp[0], "id", struct.unpack("<Q", resp[1:9])[0])
 cargo run --release --example best_performance
 ```
 
+`examples/performance_matrix.rs` 在 `best_performance` 基础上增加自动调参输出，并以 CSV 格式打印多组配置结果，便于直接复制到表格做延迟-召回权衡。
+
+```bash
+# 默认 10K × 128d
+cargo run --release --example performance_matrix
+
+# 自定义规模
+cargo run --release --example performance_matrix -- --n 50000 --dim 128 --k 10 --queries 200
+```
+
+输出示例：
+
+```text
+[matrix] recommended partitions: 316
+[matrix] latency:  nprobe=16 refine_k=100 query_bits=8 fastscan=true
+[matrix] balanced: nprobe=50 refine_k=1000 query_bits=0 fastscan=true
+[matrix] recall:   nprobe=100 refine_k=5000 query_bits=0 fastscan=true
+
+name,nprobe,refine_k,query_bits,fastscan,recall@k,qps,p50_ms
+latency,16,100,8,true,0.3200,1247.9,0.801
+balanced,50,1000,0,true,1.0000,2138.9,0.468
+balanced+qq8,50,1000,8,true,1.0000,527.9,1.894
+high-recall,100,5000,0,true,1.0000,2194.0,0.456
+exact,0,50,0,true,1.0000,2109.5,0.474
+```
+
 典型调参组合：
 
 | 场景 | nprobe | refine_k | query_bits | fastscan | 召回目标 |
