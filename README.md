@@ -327,6 +327,18 @@ chmod +x examples/performance_benchmark.sh
 DIM=128 N=50000 K=10 QUERIES=200 ./examples/performance_benchmark.sh
 ```
 
+`examples/siftsmall_benchmark.sh` 是真实数据集（siftsmall）测试示例，验证 README 中的目标配置：
+
+```bash
+chmod +x examples/siftsmall_benchmark.sh
+./examples/siftsmall_benchmark.sh
+
+# 自定义数据集路径
+DATASET_PREFIX=/path/to/siftsmall/siftsmall ./examples/siftsmall_benchmark.sh
+```
+
+该脚本会依次运行 exact / latency / balanced-high-recall / high-recall / extreme-recall 五组配置，其中 `nprobe=16, refine_k=5000` 即 README 实测的 `Recall@10 ≈ 0.994, QPS ≈ 1400` 配置。
+
 输出示例：
 
 ```text
