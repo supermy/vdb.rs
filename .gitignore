@@ -11,6 +11,7 @@
 # Test / benchmark artifacts
 /reports/lancedb_siftsmall
 /examples/data/
+/data
 lcov.info
 coverage.json
 *.lcov
