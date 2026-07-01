@@ -317,6 +317,16 @@ cargo run --release --example performance_matrix
 cargo run --release --example performance_matrix -- --n 50000 --dim 128 --k 10 --queries 200
 ```
 
+`examples/performance_benchmark.sh` 是 shell 脚本批量性能测试示例，自动构建 release 二进制并串联 `vdb tune`、`vdb-benchmark` 与 `performance_matrix`：
+
+```bash
+chmod +x examples/performance_benchmark.sh
+./examples/performance_benchmark.sh
+
+# 自定义规模
+DIM=128 N=50000 K=10 QUERIES=200 ./examples/performance_benchmark.sh
+```
+
 输出示例：
 
 ```text

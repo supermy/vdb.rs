@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-01
+
 ### Added
 
 - 工程脚手架：workspace + 多 bin（cli / server / nng-server / benchmark），`cargo build` 与 `cargo fmt --check` 通过。
@@ -23,7 +25,7 @@
 - `src/benchmark.rs`：QPS / latency(p50,p99) / recall@k / build time 测量，支持随机数据矩阵与真实 `.fvecs` 数据集（`--dataset`）。
 - 八层测试体系：`tests/unit.rs`、`tests/integration.rs`、`tests/smoke.rs`、`tests/regression.rs`、`tests/acceptance.rs`、`tests/system.rs`、`tests/e2e.rs`、`tests/server.rs`。
 - `AGENTS.md`：项目代理指令与架构、质量、生产部署规则。
-- 常见使用场景示例：`examples/embedded.rs`、`examples/mmap_zero_copy.rs`、`examples/server_http.rs`、`examples/nng_client.rs`、`examples/best_performance.rs`、`examples/performance_matrix.rs`，覆盖嵌入式、mmap 零拷贝、HTTP Server、NNG 二进制协议、最佳性能配置与自动调参 CSV 矩阵。
+- 常见使用场景示例：`examples/embedded.rs`、`examples/mmap_zero_copy.rs`、`examples/server_http.rs`、`examples/nng_client.rs`、`examples/best_performance.rs`、`examples/performance_matrix.rs`、`examples/performance_benchmark.sh`，覆盖嵌入式、mmap 零拷贝、HTTP Server、NNG 二进制协议、最佳性能配置、自动调参 CSV 矩阵与 shell 脚本批量性能测试。
 - `src/sys_info.rs`：系统资源探测（CPU 核心数、物理内存）与检索参数推荐，提供 `recommend_search_options`、`recommend_num_partitions`、`recommend_mmap_cache_bytes`。
 - CLI 完整实现：`vdb create`、`vdb insert`、`vdb search`、`vdb tune`，支持 payload、SQL 过滤与自动参数推荐。
 - HTTP Server 支持服务器级默认搜索参数：`--default-k`、`--default-nprobe`、`--default-refine-k`、`--default-query-bits` 等，请求体可继续覆盖；`/search` 新增 `fastscan`、`query_bits`、`sq8_refine` 字段。
