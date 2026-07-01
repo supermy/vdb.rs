@@ -80,6 +80,219 @@ cargo run --bin vdb-benchmark -- \
 | 端到端测试 | `cargo test --test e2e` |
 | 服务器测试 | `cargo test --test server` |
 
+## 常见使用场景
+
+下面给出五种典型使用方式的完整步骤、配置建议与命令。所有示例均为可运行代码，位于 `examples/` 目录。
+
+### 1. 嵌入式模式（业务进程内直接调用）
+
+适用于需要在业务服务内部直接嵌入向量检索能力的场景，无需独立进程。
+
+```bash
+cargo run --release --example embedded
+```
+
+该示例展示：
+- 使用 `Database::create` 创建数据库；
+- 使用 `insert_with_payload` 插入带标量 payload 的向量；
+- 使用 `SearchOptions` 进行普通搜索、SQL 过滤搜索与高召回搜索；
+- 通过 `db.stats()` 查看版本、向量数与分区数。
+
+关键 API：
+
+```rust
+use vdb_rs::vdb::Database;
+use vdb_rs::search::SearchOptions;
+use vdb_rs::index_ivf_rq::Payload;
+
+let db = Database::create("./data/mydb", 128)?;
+
+let mut payload = Payload::new();
+payload.insert("category".to_string(), serde_json::json!("news"));
+payload.insert("score".to_string(), serde_json::json!(0.95));
+let id = db.insert_with_payload(&vector, payload)?;
+
+let opts = SearchOptions {
+    k: 10,
+    nprobe: 50,
+    refine: true,
+    refine_k: 1000,
+    fastscan: true,
+    query_bits: 0,
+    sq8_refine: false,
+    sql_filter: Some("score >= 0.9".to_string()),
+};
+let results = db.search(&query, &opts);
+```
+
+### 2. 分块 mmap 零拷贝启动
+
+适用于内存受限、启动速度敏感、以只读为主的场景。`MmapDatabase` 仅加载元数据，查询时按需 fault 64MB 数据块，并通过用户态 LRU 控制总映射量。
+
+```bash
+cargo run --release --example mmap_zero_copy
+```
+
+要点：
+- 写入阶段使用普通 `Database`；
+- 读取阶段使用 `MmapDatabase::open` 零拷贝打开；
+- 搜索接口为 `mmap_db.search(query, k, nprobe)`；
+- 当前仅支持 Unix-like 系统。
+
+```rust
+use vdb_rs::vdb::{Database, MmapDatabase};
+
+let db = Database::create("./data/mmap_db", 128)?;
+for _ in 0..1000 { db.insert(&vector)?; }
+
+let mmap_db = MmapDatabase::open("./data/mmap_db")?;
+let results = mmap_db.search(&query, 10, 100);
+```
+
+### 3. HTTP Server 模式
+
+提供 OpenAI/Anthropic 兼容的 JSON API，并内置 llama-server 风格的浏览器测试页面。
+
+启动服务：
+
+```bash
+# 默认监听 127.0.0.1:8080
+cargo run --release --bin vdb-server
+
+# 自定义地址与维度
+cargo run --release --bin vdb-server -- --listen 0.0.0.0:8080 --dim 128
+```
+
+API 示例：
+
+```bash
+# 查看统计信息
+curl http://127.0.0.1:8080/stats
+
+# 单条插入（可附带 payload）
+curl -X POST http://127.0.0.1:8080/insert \
+  -H 'Content-Type: application/json' \
+  -d '{"vector": [0.1, 0.2, ..., 0.128], "payload": {"tag": "demo"}}'
+
+# 向量搜索（生产推荐配置）
+curl -X POST http://127.0.0.1:8080/search \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query": [0.1, 0.2, ..., 0.128],
+    "k": 10,
+    "nprobe": 50,
+    "refine": true,
+    "refine_k": 1000
+  }'
+
+# SQL 过滤搜索
+curl -X POST http://127.0.0.1:8080/search \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query": [0.1, 0.2, ..., 0.128],
+    "k": 5,
+    "nprobe": 0,
+    "refine": true,
+    "refine_k": 100,
+    "sql_filter": "score >= 0.9"
+  }'
+
+# 批量插入
+curl -X POST http://127.0.0.1:8080/batch_insert \
+  -H 'Content-Type: application/json' \
+  -d '{"vectors": [[0.1, ...], [0.2, ...]]}'
+```
+
+浏览器打开 `http://127.0.0.1:8080/` 即可使用测试页面（向量搜索、性能测试、数据管理）。
+
+程序化启动 HTTP server 的示例：
+
+```bash
+cargo run --release --example server_http
+```
+
+### 4. NNG 二进制协议（低延迟生产接口）
+
+NNG 模式使用原始 TCP 二进制协议，解析开销极小，适合低延迟内网调用。
+
+启动服务：
+
+```bash
+cargo run --release --bin vdb-nng-server
+# 默认监听 tcp://0.0.0.0:9090
+```
+
+协议格式：
+
+```text
+[4 bytes: message length][1 byte: command][payload]
+```
+
+支持的命令：
+
+| 命令 | 编码 | payload 说明 |
+|------|------|--------------|
+| PING | 0x01 | 空 |
+| SEARCH | 0x02 | `[4B k][4B nprobe][4B dim][dim×4B f32]` |
+| BATCH_SEARCH | 0x03 | `[4B k][4B nprobe][4B dim][4B num_queries][num_queries×dim×4B f32]` |
+| INSERT | 0x04 | `[4B dim][dim×4B f32]` |
+| IMPORT_JSON | 0x05 | JSON 数组：`[[f32, ...], ...]` |
+| EXPORT_JSON | 0x06 | 空 |
+
+响应格式：`[4B length][1B code][data]`，`code=0x00` 成功，`0xFF` 错误。SEARCH 结果每个元素为 `[8B id][4B distance]`。
+
+Rust 客户端示例（默认连接 127.0.0.1:9090、维度 64，与 `vdb-nng-server` 默认一致）：
+
+```bash
+# 默认维度 64（与 vdb-nng-server 默认一致）
+cargo run --release --example nng_client
+
+# 自定义地址与维度
+VDB_NNG_ADDR=127.0.0.1:9091 VDB_NNG_DIM=128 cargo run --release --example nng_client
+```
+
+Python 最小客户端示例：
+
+```python
+import socket, struct
+
+s = socket.create_connection(("127.0.0.1", 9090))
+dim = 64  # 与 vdb-nng-server 默认维度一致
+vec = [0.1] * dim
+payload = struct.pack("<I", dim) + struct.pack(f"<{dim}f", *vec)
+msg = struct.pack("<I", 1 + len(payload)) + b'\x04' + payload
+s.sendall(msg)
+
+resp_len = struct.unpack("<I", s.recv(4))[0]
+resp = s.recv(resp_len)
+print("code", resp[0], "id", struct.unpack("<Q", resp[1:9])[0])
+```
+
+### 5. 最佳性能配置
+
+`examples/best_performance.rs` 在随机数据上对比不同 `nprobe`、`query_bits`、`refine_k` 组合的延迟、QPS 与召回率，帮助选择生产参数。
+
+```bash
+cargo run --release --example best_performance
+```
+
+典型调参组合：
+
+| 场景 | nprobe | refine_k | query_bits | fastscan | 召回目标 |
+|------|--------|----------|------------|----------|----------|
+| 极速（低延迟） | 16 | k×10 | 8 | true | 中等 |
+| 平衡（推荐） | 50 | 1000 | 0 / 8 | true | ≥ 0.95 |
+| 高召回 | 100 | 5000 | 0 | true | ≥ 0.99 |
+| 离线精确比对 | 0（全分区） | k×10 | 0 | true | 1.0 |
+
+参数说明：
+
+- `nprobe`：扫描分区数，`0` 表示全部分区；增大可提升召回，但增加延迟。
+- `refine_k`：精排候选数，对粗排 TopK 用原始向量重新计算真实距离；显著影响召回。
+- `fastscan`：批量 XOR-popcount，默认开启，QPS 提升 3.5x 以上。
+- `query_bits`：Query Quantization 位数，`0` 禁用，`8` 在几乎无损召回下 QPS 提升约 2 倍。
+- `sq8_refine`：使用 SQ8 码进行精排，适合需要减少内存带宽的场景。
+
 ## API 速览
 
 ```rust

@@ -23,11 +23,13 @@
 - `src/benchmark.rs`：QPS / latency(p50,p99) / recall@k / build time 测量，支持随机数据矩阵与真实 `.fvecs` 数据集（`--dataset`）。
 - 八层测试体系：`tests/unit.rs`、`tests/integration.rs`、`tests/smoke.rs`、`tests/regression.rs`、`tests/acceptance.rs`、`tests/system.rs`、`tests/e2e.rs`、`tests/server.rs`。
 - `AGENTS.md`：项目代理指令与架构、质量、生产部署规则。
+- 常见使用场景示例：`examples/embedded.rs`、`examples/mmap_zero_copy.rs`、`examples/server_http.rs`、`examples/nng_client.rs`、`examples/best_performance.rs`，覆盖嵌入式、mmap 零拷贝、HTTP Server、NNG 二进制协议与最佳性能配置。
 
 ### Changed
 
 - `benchmark.rs` 新增 `--refine-k` 参数，允许调节精排候选数以提升召回率。
 - `TODOS.md` 各阶段任务状态同步：SQ8、Query Quantization、R*centroid、mmap 按需加载、POSIX socket 迁移、libevent HTTP 优化、覆盖率与 CI 配置等标记为完成。
+- `Cargo.toml` 与 `README.md` 仓库链接更新为 `https://github.com/supermy/vdb-rs`。
 - `README.md` 重写：补充定位、特性矩阵、真实数据集测试、API 速览、生产部署建议、性能目标与对标。
 
 ### Fixed
