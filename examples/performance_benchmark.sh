@@ -58,6 +58,26 @@ echo
   --nprobe 100 \
   --refine-k 5000
 
+# 3.5 Query Quantization 与 SQ8 精排示例
+echo
+./target/release/vdb-benchmark \
+  --dim "${DIM}" \
+  --n "${N}" \
+  --k "${K}" \
+  --queries "${QUERIES}" \
+  --nprobe 50 \
+  --refine-k 1000 \
+  --query-bits 8
+
+./target/release/vdb-benchmark \
+  --dim "${DIM}" \
+  --n "${N}" \
+  --k "${K}" \
+  --queries "${QUERIES}" \
+  --nprobe 100 \
+  --refine-k 5000 \
+  --sq8-refine
+
 # 4. performance_matrix 示例：CSV 风格矩阵
 echo
 echo "[4/4] running performance matrix..."

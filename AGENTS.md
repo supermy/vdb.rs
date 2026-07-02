@@ -44,7 +44,7 @@
 - `thread_pool.rs`: 固定工作线程池 + 自旋锁任务队列，`batchInsert` 和 `batchSearch` 复用线程池，支持 `rayon::par_iter` 并行迭代。
 - `http_server.rs`: HTTP 服务核心逻辑，基于 **libevent evhttp C FFI** 实现事件驱动、非阻塞 I/O；负责 HTTP 解析、路由、CORS、静态资源、`include_str!` 编译时嵌入、`k≤256` 保护、search/insert/stats API。
 - `server.rs`: OpenAI/Anthropic 兼容的 HTTP API 服务入口，创建 `HttpServer` 并启动 libevent 事件循环；保持 CLI/Server 不感知 Lance 页布局或 RaBitQ 位运算细节。
-- `nng_server.rs`: 基于原始 TCP 的二进制协议高性能服务；生产部署优先使用该路径以降低延迟。**注意**：当前仍使用 `std::io.net` API，尚未迁移到 POSIX socket。
+- `nng_server.rs`: 基于原始 TCP 的二进制协议高性能服务，Unix 使用 POSIX socket，支持搜索选项位掩码；生产部署优先使用该路径以降低延迟。
 - `cli.rs`: 命令行入口、索引构建（`create-index --type IVF_RQ`）、分区维护、本地 REPL 查询、**嵌入式模式直接查询**。
 - `benchmark.rs`: 内置对比测试框架，测量 QPS、latency、recall@k、build time 等指标。
 - `tests/`: 八层测试体系（unit / integration / smoke / regression / acceptance / system / e2e / server），覆盖全部代码路径。
@@ -58,7 +58,7 @@
 
 ## 索引与查询参数约定
 
-- `num_partitions`: IVF 分区数，默认 `sqrt(N)`（上限 128，下限 4），与 Milvus 对齐。百万级数据建议 4096，十亿级建议 65536。
+- `num_partitions`: IVF 分区数，默认 `sqrt(N).clamp(4, 65536)`（`MIN_PARTITIONS=4`，`MAX_PARTITIONS=65536`），与 Milvus 对齐。百万级数据建议 4096，十亿级建议 65536。
 - `num_bits`: RaBitQ 查询向量量化位数（`Bq`），默认 4，理论推导为 `Θ(log log D)`，跨数据集固定。
 - `epsilon_0`: 归一化边界参数，固定 1.9，不暴露为运行时配置。
 - `nprobe`: 查询扫描分区数，默认 50~300，由查询 API 按延迟-召回需求传入。
@@ -71,7 +71,7 @@
 
 ## 性能与稳定性测试
 
-- 使用 `cargo run --bin vdb-benchmark` 运行自动化性能基准测试，对比维度 64/128/256/512/768/1024、数据集规模 1K~1M 的 QPS 与延迟（p50/p99）。
+- 使用 `cargo run --bin vdb-benchmark` 运行自动化性能基准测试，对比维度 64/128/256/512/768/1024、数据集规模 1K~1M 的 QPS 与延迟（p50/p99）；支持 `--query-bits`、`--sq8-refine` 等参数以验证 Query Quantization 与 SQ8 精排路径。
 - 使用 `cargo run --bin vdb-benchmark -- --dataset <prefix>` 加载真实数据集（如 `../models/data/siftsmall/siftsmall`），自动读取 `<prefix>_base.fvecs`、`<prefix>_query.fvecs`、`<prefix>_groundtruth.ivecs`，测量 recall@k 与 QPS。
 - 在 CI 中增加压力测试门控：100K 向量插入耗时 < 60s，100 次查询耗时 < 10s。
 - 内存稳定性测试：10K 连续插入后校验分区总向量数等于插入数，防止内存泄漏或重复分配。
@@ -81,12 +81,13 @@
 
 ## NNG 与 HTTP 高性能接口服务
 
-- `src/nng_server.rs` 实现基于原始 TCP 的二进制协议服务，监听 `tcp://0.0.0.0:9090`。
+- `src/nng_server.rs` 实现基于原始 TCP 的二进制协议服务，监听 `tcp://0.0.0.0:9090`；Unix 平台使用 POSIX socket 直接系统调用，Windows 回退到 `std::net`。
 - 协议格式：`[4 bytes: message length][1 byte: command][payload]`，极小解析开销。
 - 支持的命令：PING(0x01)、SEARCH(0x02)、BATCH_SEARCH(0x03)、INSERT(0x04)、IMPORT_JSON(0x05)、EXPORT_JSON(0x06)。
+- SEARCH / BATCH_SEARCH 兼容旧格式，并扩展支持 `flags`（refine/fastscan/sq8_refine）与 `query_bits`，使 NNG 客户端可控制完整搜索路径。
 - 响应统一以 `[4 bytes: length][1 byte: response_code]` 开头，错误码 0xFF。
-- HTTP Server 路径（`src/http_server.rs` + `src/server.rs`）已迁移到 **libevent evhttp**，事件驱动、非阻塞 I/O，支持 CORS、静态资源、search/insert/stats API，用于调试与浏览器测试页面。
-- **已知问题**：`nng_server.rs` 当前仍使用 `std::io.net` API，与 `server.rs` 的 libevent 实现不一致，大负载下可能存在 writer buffer 限制问题。
+- HTTP Server 路径（`src/http_server.rs` + `src/server.rs`）已迁移到 **libevent evhttp**，事件驱动、非阻塞 I/O，支持 CORS、静态资源、search/insert/batch_insert/stats API，用于调试与浏览器测试页面。
+- `/batch_insert` 支持可选 `payloads` 数组，与 `Database::batch_insert_with_payload` 语义对齐。
 
 ## GPU 支持备选方案
 
@@ -134,7 +135,7 @@
 
 - 推荐构建模式：`cargo build --release`
 - 推荐部署 checklist：
-  - [ ] 确认 `num_partitions = sqrt(N)`（上限 128，下限 4）
+  - [ ] 确认 `num_partitions = sqrt(N).clamp(4, 65536)`
   - [ ] 确认维度 % 64 == 0（RaBitQ 量化要求）
   - [ ] 设置合适的 `nprobe`（延迟-召回平衡）
   - [ ] 启用 refine 层保障生产召回率（`refine_sq8 = true`，`refine_k = 10`）

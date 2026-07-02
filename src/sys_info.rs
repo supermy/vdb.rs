@@ -5,6 +5,36 @@
 
 use std::num::NonZeroUsize;
 
+/// 内存阈值：低于此值按低内存策略限制 mmap 预算（字节）。
+pub const MEMORY_THRESHOLD_BYTES: u64 = 16u64 * 1024 * 1024 * 1024;
+
+/// 低内存场景 mmap 缓存占物理内存比例（%）。
+pub const SMALL_MEMORY_CACHE_PERCENT: u64 = 50;
+
+/// 大内存场景 mmap 缓存占物理内存比例（%）。
+pub const LARGE_MEMORY_CACHE_PERCENT: u64 = 85;
+
+/// IVF 分区数下限。
+pub const MIN_PARTITIONS: usize = 4;
+
+/// IVF 分区数上限（RaBitQ 索引内核同步保持此值）。
+pub const MAX_PARTITIONS: usize = 65_536;
+
+/// 小数据集阈值（向量数）。
+pub const SMALL_DATASET_THRESHOLD: usize = 10_000;
+
+/// 中等数据集阈值（向量数）。
+pub const MEDIUM_DATASET_THRESHOLD: usize = 1_000_000;
+
+/// 大规模数据集默认 nprobe 下限。
+pub const LARGE_NPROBE_MIN: usize = 100;
+
+/// 大规模数据集默认 nprobe 上限。
+pub const LARGE_NPROBE_MAX: usize = 300;
+
+/// 极速模式默认 nprobe。
+pub const LATENCY_NPROBE: usize = 16;
+
 /// 获取可用并行度（逻辑 CPU 核心数），至少返回 1。
 pub fn available_parallelism() -> usize {
     std::thread::available_parallelism()
@@ -37,20 +67,19 @@ pub fn physical_memory_bytes() -> Option<u64> {
 /// - 内存 < 16 GB：不超过物理内存 50%；
 /// - 内存 ≥ 16 GB：不超过物理内存 85%。
 pub fn recommend_mmap_cache_bytes(memory_bytes: u64) -> u64 {
-    let threshold = 16u64 * 1024 * 1024 * 1024;
-    if memory_bytes < threshold {
-        memory_bytes / 2
+    if memory_bytes < MEMORY_THRESHOLD_BYTES {
+        (memory_bytes * SMALL_MEMORY_CACHE_PERCENT) / 100
     } else {
-        (memory_bytes * 85) / 100
+        (memory_bytes * LARGE_MEMORY_CACHE_PERCENT) / 100
     }
 }
 
 /// 推荐 IVF 分区数。
 ///
-/// 公式：`min(max(4, sqrt(N)), 65536)`，与索引内核保持一致。
+/// 公式：`min(max(MIN_PARTITIONS, sqrt(N)), MAX_PARTITIONS)`，与索引内核保持一致。
 pub fn recommend_num_partitions(n: usize) -> usize {
     let sqrt = (n as f64).sqrt() as usize;
-    sqrt.clamp(4, 65536)
+    sqrt.clamp(MIN_PARTITIONS, MAX_PARTITIONS)
 }
 
 /// 根据系统资源与数据规模推荐搜索参数。
@@ -61,22 +90,22 @@ pub fn recommend_num_partitions(n: usize) -> usize {
 /// - 高召回：大 nprobe + 大 refine_k。
 pub fn recommend_search_options(n: usize, k: usize) -> RecommendedOptions {
     let partitions = recommend_num_partitions(n);
-    let (nprobe, refine_k, query_bits, recall_target) = if n < 10_000 {
+    let (nprobe, refine_k, query_bits, recall_target) = if n < SMALL_DATASET_THRESHOLD {
         // 数据量较小，直接扫描更多分区，精排候选数不需要太大。
         (partitions.min(50), k * 20, 0, "≥ 0.99")
-    } else if n < 1_000_000 {
+    } else if n < MEDIUM_DATASET_THRESHOLD {
         // 中等规模：平衡配置。
         (50usize, 1_000usize, 0, "≥ 0.95")
     } else {
-        // 大规模：nprobe 取分区数的 1% 左右，但不超过 300；精排候选数放大。
-        let nprobe = (partitions / 100).clamp(100, 300);
+        // 大规模：nprobe 取分区数的 1% 左右，但限制在 [LARGE_NPROBE_MIN, LARGE_NPROBE_MAX]；精排候选数放大。
+        let nprobe = (partitions / 100).clamp(LARGE_NPROBE_MIN, LARGE_NPROBE_MAX);
         (nprobe, 5_000, 0, "≥ 0.96")
     };
 
     RecommendedOptions {
         partitions,
         latency: LatencyOptions {
-            nprobe: 16,
+            nprobe: LATENCY_NPROBE,
             refine_k: k * 10,
             query_bits: 8,
             fastscan: true,
@@ -90,7 +119,7 @@ pub fn recommend_search_options(n: usize, k: usize) -> RecommendedOptions {
             recall_target,
         },
         recall: LatencyOptions {
-            nprobe: (partitions / 10).clamp(100, 300),
+            nprobe: (partitions / 10).clamp(LARGE_NPROBE_MIN, LARGE_NPROBE_MAX),
             refine_k: 5_000,
             query_bits: 0,
             fastscan: true,

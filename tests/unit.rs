@@ -6,6 +6,10 @@ use vdb_rs::index_ivf_rq::IvfRabitqIndex;
 use vdb_rs::search::{SearchOptions, search};
 use vdb_rs::simd::{batch_hamming_distance, dot_product, hamming_distance, l2_distance_squared};
 use vdb_rs::sql::parse_sql_filter;
+use vdb_rs::sys_info::{
+    available_parallelism, physical_memory_bytes, recommend_mmap_cache_bytes,
+    recommend_num_partitions, recommend_search_options,
+};
 
 fn gaussian_random() -> f32 {
     let u1 = rand::random::<f32>().max(1e-7);
@@ -96,4 +100,187 @@ fn gpu_fallback() {
         batch_hamming_distance(&query, &refs, &mut expected);
         assert_eq!(out, expected);
     }
+}
+
+#[test]
+fn sys_info_available_parallelism_nonzero() {
+    let cpus = available_parallelism();
+    assert!(cpus >= 1, "available_parallelism should be at least 1");
+}
+
+#[test]
+#[cfg(unix)]
+fn sys_info_physical_memory_nonzero_on_unix() {
+    let mem = physical_memory_bytes().expect("physical_memory_bytes should succeed on unix");
+    assert!(mem > 0, "physical memory should be positive");
+}
+
+#[test]
+fn sys_info_recommend_mmap_cache_bytes_boundary() {
+    let mem_16g = 16u64 * 1024 * 1024 * 1024;
+    // 恰好在边界上按 16GB 的 85% 计算。
+    assert_eq!(recommend_mmap_cache_bytes(mem_16g), (mem_16g * 85) / 100);
+}
+
+#[test]
+fn sys_info_recommend_num_partitions_clamped() {
+    assert_eq!(recommend_num_partitions(0), 4);
+    assert_eq!(recommend_num_partitions(3), 4);
+    assert_eq!(recommend_num_partitions(100), 10);
+    assert_eq!(recommend_num_partitions(65536 * 65536), 65536);
+}
+
+#[test]
+fn sys_info_recommend_search_options_scales() {
+    let small = recommend_search_options(1_000, 10);
+    assert_eq!(small.partitions, recommend_num_partitions(1_000));
+    assert!(small.balanced.nprobe <= 50);
+
+    let medium = recommend_search_options(100_000, 10);
+    assert_eq!(medium.partitions, 316);
+    assert_eq!(medium.balanced.nprobe, 50);
+
+    let large = recommend_search_options(10_000_000, 10);
+    assert!(large.partitions > 1000);
+    assert!(large.balanced.nprobe >= 100 && large.balanced.nprobe <= 300);
+
+    // latency 模式启用 query_bits=8，recall 模式关闭量化。
+    assert_eq!(small.latency.query_bits, 8);
+    assert_eq!(small.recall.query_bits, 0);
+}
+
+#[test]
+fn sql_predicate_all_operators() {
+    let pred = parse_sql_filter(
+        "a = 1 AND b != 2 AND c < 10 AND d <= 10 AND e > 0 AND f >= 5 AND g IN (7, 8, 9)",
+    )
+    .unwrap();
+
+    let mut payload = serde_json::Map::new();
+    payload.insert("a".to_string(), serde_json::json!(1));
+    payload.insert("b".to_string(), serde_json::json!(1));
+    payload.insert("c".to_string(), serde_json::json!(9));
+    payload.insert("d".to_string(), serde_json::json!(10));
+    payload.insert("e".to_string(), serde_json::json!(1));
+    payload.insert("f".to_string(), serde_json::json!(5));
+    payload.insert("g".to_string(), serde_json::json!(8));
+    assert!(pred.eval(&payload));
+
+    // 逐一破坏条件，验证每个操作符都能正确返回 false。
+    let mut p = payload.clone();
+    p.insert("a".to_string(), serde_json::json!(2));
+    assert!(!pred.eval(&p));
+
+    let mut p = payload.clone();
+    p.insert("b".to_string(), serde_json::json!(2));
+    assert!(!pred.eval(&p));
+
+    let mut p = payload.clone();
+    p.insert("c".to_string(), serde_json::json!(10));
+    assert!(!pred.eval(&p));
+
+    let mut p = payload.clone();
+    p.insert("d".to_string(), serde_json::json!(11));
+    assert!(!pred.eval(&p));
+
+    let mut p = payload.clone();
+    p.insert("e".to_string(), serde_json::json!(0));
+    assert!(!pred.eval(&p));
+
+    let mut p = payload.clone();
+    p.insert("f".to_string(), serde_json::json!(4));
+    assert!(!pred.eval(&p));
+
+    let mut p = payload.clone();
+    p.insert("g".to_string(), serde_json::json!(6));
+    assert!(!pred.eval(&p));
+}
+
+/// SQL 解析器错误路径：TDD 保证非法输入被拒绝，而非静默返回错误结果。
+#[test]
+fn sql_parser_error_paths() {
+    // 未闭合字符串。
+    assert!(parse_sql_filter("name = 'alice").is_err());
+    // 非法字符。
+    assert!(parse_sql_filter("a @ 1").is_err());
+    // 尾部多余 token。
+    assert!(parse_sql_filter("a = 1 )").is_err());
+    // 缺少操作符。
+    assert!(parse_sql_filter("a 1").is_err());
+    // 缺少标量值。
+    assert!(parse_sql_filter("a = ").is_err());
+    // 缺少标识符。
+    assert!(parse_sql_filter("= 1").is_err());
+    // IN 缺少右括号。
+    assert!(parse_sql_filter("a IN (1, 2").is_err());
+    // IN 缺少左括号。
+    assert!(parse_sql_filter("a IN 1, 2)").is_err());
+    // 空输入。
+    assert!(parse_sql_filter("").is_err());
+    // 括号不匹配。
+    assert!(parse_sql_filter("(a = 1").is_err());
+}
+
+/// `<>` 作为 `!=` 的别名，以及 Bool 值谓词求值。
+#[test]
+fn sql_ne_alias_and_bool() {
+    // <> 等价于 !=。
+    let pred = parse_sql_filter("status <> 'active'").unwrap();
+    let mut p = serde_json::Map::new();
+    p.insert("status".to_string(), serde_json::json!("inactive"));
+    assert!(pred.eval(&p));
+    p.insert("status".to_string(), serde_json::json!("active"));
+    assert!(!pred.eval(&p));
+
+    // Bool 值相等判断（TRUE -> 1.0, FALSE -> 0.0）。
+    let pred = parse_sql_filter("flag = TRUE").unwrap();
+    let mut p = serde_json::Map::new();
+    p.insert("flag".to_string(), serde_json::json!(true));
+    // 注意：TRUE 被词法化为 Number(1.0)，而 payload 存的是 Bool(true)，
+    // 类型不匹配时返回 false——这是当前实现的预期行为。
+    assert!(!pred.eval(&p));
+    p.insert("flag".to_string(), serde_json::json!(1));
+    assert!(pred.eval(&p));
+
+    // FALSE 词法化为 0.0。
+    let pred = parse_sql_filter("flag = FALSE").unwrap();
+    let mut p = serde_json::Map::new();
+    p.insert("flag".to_string(), serde_json::json!(0));
+    assert!(pred.eval(&p));
+}
+
+/// OR 与括号优先级：`(a = 1 OR b = 2) AND c = 3`。
+#[test]
+fn sql_or_with_parentheses_precedence() {
+    let pred = parse_sql_filter("(a = 1 OR b = 2) AND c = 3").unwrap();
+
+    let mut p = serde_json::Map::new();
+    p.insert("a".to_string(), serde_json::json!(1));
+    p.insert("c".to_string(), serde_json::json!(3));
+    assert!(pred.eval(&p));
+
+    let mut p = serde_json::Map::new();
+    p.insert("b".to_string(), serde_json::json!(2));
+    p.insert("c".to_string(), serde_json::json!(3));
+    assert!(pred.eval(&p));
+
+    // OR 不满足但 AND 满足 -> false。
+    let mut p = serde_json::Map::new();
+    p.insert("a".to_string(), serde_json::json!(0));
+    p.insert("c".to_string(), serde_json::json!(3));
+    assert!(!pred.eval(&p));
+
+    // OR 满足但 AND 不满足 -> false。
+    let mut p = serde_json::Map::new();
+    p.insert("a".to_string(), serde_json::json!(1));
+    p.insert("c".to_string(), serde_json::json!(0));
+    assert!(!pred.eval(&p));
+}
+
+/// 字段不存在时所有比较操作符应返回 false（不 panic）。
+#[test]
+fn sql_missing_field_returns_false() {
+    let pred = parse_sql_filter("missing = 1 AND missing > 0 AND missing IN (1, 2)").unwrap();
+    let p = serde_json::Map::new();
+    assert!(!pred.eval(&p));
 }

@@ -19,10 +19,16 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
 use vdb_rs::index_ivf_rq::IvfRabitqIndex;
+use vdb_rs::search::{SearchOptions, search};
 use vdb_rs::sys_info::{available_parallelism, physical_memory_bytes, recommend_mmap_cache_bytes};
 
 const RESP_OK: u8 = 0x00;
 const RESP_ERR: u8 = 0xFF;
+
+/// 扩展 SEARCH 协议标志位。
+const FLAG_REFINE: u32 = 1 << 0;
+const FLAG_FASTSCAN: u32 = 1 << 1;
+const FLAG_SQ8_REFINE: u32 = 1 << 2;
 
 const CMD_PING: u8 = 0x01;
 const CMD_SEARCH: u8 = 0x02;
@@ -342,45 +348,144 @@ fn handle_ping() -> Result<Vec<u8>, String> {
     Ok(Vec::new())
 }
 
-fn handle_search(index: &Arc<Mutex<IvfRabitqIndex>>, payload: &[u8]) -> Result<Vec<u8>, String> {
+/// 解析 SEARCH 协议负载。
+///
+/// 兼容旧格式 `[k:u32][nprobe:u32][dim:u32][vector...]`，
+/// 并扩展新格式 `[k:u32][nprobe:u32][flags:u32][query_bits:u8][dim:u32][vector...]`，
+/// 使 NNG 客户端能够控制 refine / fastscan / query_bits / sq8_refine。
+fn parse_search_payload(payload: &[u8]) -> Option<(SearchOptions, Vec<f32>)> {
     if payload.len() < 12 {
-        return Err("search payload too short".to_string());
+        return None;
     }
     let k = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
     let nprobe = u32::from_le_bytes(payload[4..8].try_into().unwrap()) as usize;
-    let dim = u32::from_le_bytes(payload[8..12].try_into().unwrap()) as usize;
-    if payload.len() != 12 + dim * 4 {
-        return Err("search payload length mismatch".to_string());
-    }
-    let query = read_f32s(&payload[12..], dim)?;
 
+    // 优先尝试扩展格式：末尾多 5 字节头部（flags + query_bits + dim）。
+    if payload.len() >= 17 {
+        let flags = u32::from_le_bytes(payload[8..12].try_into().unwrap());
+        let query_bits = payload[12];
+        let dim = u32::from_le_bytes(payload[13..17].try_into().unwrap()) as usize;
+        if payload.len() == 17 + dim * 4 {
+            let query = read_f32s(&payload[17..], dim).ok()?;
+            return Some((
+                SearchOptions {
+                    k,
+                    nprobe,
+                    refine: flags & FLAG_REFINE != 0,
+                    refine_k: k * 10,
+                    fastscan: flags & FLAG_FASTSCAN != 0,
+                    query_bits,
+                    sq8_refine: flags & FLAG_SQ8_REFINE != 0,
+                    sql_filter: None,
+                },
+                query,
+            ));
+        }
+    }
+
+    // 退化到旧格式：默认开启生产级 refine/fastscan。
+    let dim = u32::from_le_bytes(payload[8..12].try_into().unwrap()) as usize;
+    if payload.len() == 12 + dim * 4 {
+        let query = read_f32s(&payload[12..], dim).ok()?;
+        return Some((
+            SearchOptions {
+                k,
+                nprobe,
+                refine: true,
+                refine_k: k * 10,
+                fastscan: true,
+                query_bits: 0,
+                sq8_refine: false,
+                sql_filter: None,
+            },
+            query,
+        ));
+    }
+
+    None
+}
+
+fn handle_search(index: &Arc<Mutex<IvfRabitqIndex>>, payload: &[u8]) -> Result<Vec<u8>, String> {
+    let (options, query) =
+        parse_search_payload(payload).ok_or_else(|| "search payload format error".to_string())?;
     let idx = index.lock().unwrap();
-    let results = idx.search(&query, k, nprobe);
+    let results = search(&idx, &query, &options, None);
     Ok(serialize_results(&results))
+}
+
+/// 解析 BATCH_SEARCH 协议负载。
+///
+/// 旧格式：`[k][nprobe][dim][num_queries][queries...]`。
+/// 新格式：`[k][nprobe][flags][query_bits][dim][num_queries][queries...]`。
+fn parse_batch_search_payload(payload: &[u8]) -> Option<(SearchOptions, usize, usize, &[u8])> {
+    if payload.len() < 16 {
+        return None;
+    }
+    let k = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
+    let nprobe = u32::from_le_bytes(payload[4..8].try_into().unwrap()) as usize;
+
+    if payload.len() >= 21 {
+        let flags = u32::from_le_bytes(payload[8..12].try_into().unwrap());
+        let query_bits = payload[12];
+        let dim = u32::from_le_bytes(payload[13..17].try_into().unwrap()) as usize;
+        let num_queries = u32::from_le_bytes(payload[17..21].try_into().unwrap()) as usize;
+        let expected = 21 + num_queries * dim * 4;
+        if payload.len() == expected {
+            return Some((
+                SearchOptions {
+                    k,
+                    nprobe,
+                    refine: flags & FLAG_REFINE != 0,
+                    refine_k: k * 10,
+                    fastscan: flags & FLAG_FASTSCAN != 0,
+                    query_bits,
+                    sq8_refine: flags & FLAG_SQ8_REFINE != 0,
+                    sql_filter: None,
+                },
+                dim,
+                num_queries,
+                &payload[21..],
+            ));
+        }
+    }
+
+    let dim = u32::from_le_bytes(payload[8..12].try_into().unwrap()) as usize;
+    let num_queries = u32::from_le_bytes(payload[12..16].try_into().unwrap()) as usize;
+    let expected = 16 + num_queries * dim * 4;
+    if payload.len() == expected {
+        return Some((
+            SearchOptions {
+                k,
+                nprobe,
+                refine: true,
+                refine_k: k * 10,
+                fastscan: true,
+                query_bits: 0,
+                sq8_refine: false,
+                sql_filter: None,
+            },
+            dim,
+            num_queries,
+            &payload[16..],
+        ));
+    }
+
+    None
 }
 
 fn handle_batch_search(
     index: &Arc<Mutex<IvfRabitqIndex>>,
     payload: &[u8],
 ) -> Result<Vec<u8>, String> {
-    if payload.len() < 16 {
-        return Err("batch search payload too short".to_string());
-    }
-    let k = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
-    let nprobe = u32::from_le_bytes(payload[4..8].try_into().unwrap()) as usize;
-    let dim = u32::from_le_bytes(payload[8..12].try_into().unwrap()) as usize;
-    let num_queries = u32::from_le_bytes(payload[12..16].try_into().unwrap()) as usize;
-    let expected = 16 + num_queries * dim * 4;
-    if payload.len() != expected {
-        return Err("batch search payload length mismatch".to_string());
-    }
+    let (options, dim, num_queries, queries_bytes) = parse_batch_search_payload(payload)
+        .ok_or_else(|| "batch search payload format error".to_string())?;
 
     let idx = index.lock().unwrap();
     let mut out = Vec::new();
     for q in 0..num_queries {
-        let off = 16 + q * dim * 4;
-        let query = read_f32s(&payload[off..off + dim * 4], dim)?;
-        let results = idx.search(&query, k, nprobe);
+        let off = q * dim * 4;
+        let query = read_f32s(&queries_bytes[off..off + dim * 4], dim)?;
+        let results = search(&idx, &query, &options, None);
         out.extend_from_slice(&(results.len() as u32).to_le_bytes());
         out.extend_from_slice(&serialize_results(&results));
     }
@@ -457,5 +562,85 @@ mod tests {
         let bytes: Vec<u8> = v.iter().flat_map(|f| f.to_le_bytes()).collect();
         let decoded = read_f32s(&bytes, 2).unwrap();
         assert_eq!(decoded, v);
+    }
+
+    #[test]
+    fn test_handle_search_legacy_and_options_payload() {
+        let index = Arc::new(Mutex::new(IvfRabitqIndex::new(64)));
+        let vector: Vec<f32> = (0..64).map(|i| i as f32).collect();
+        let id = index.lock().unwrap().add(&vector);
+
+        // 旧格式（兼容）
+        let mut legacy = Vec::new();
+        legacy.extend_from_slice(&10u32.to_le_bytes());
+        legacy.extend_from_slice(&0u32.to_le_bytes());
+        legacy.extend_from_slice(&64u32.to_le_bytes());
+        legacy.extend_from_slice(
+            &vector
+                .iter()
+                .flat_map(|f| f.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let res = handle_search(&index, &legacy).unwrap();
+        assert!(!res.is_empty());
+        assert_eq!(u64::from_le_bytes(res[0..8].try_into().unwrap()), id);
+
+        // 新格式：开启 refine + fastscan
+        let mut ext = Vec::new();
+        ext.extend_from_slice(&10u32.to_le_bytes());
+        ext.extend_from_slice(&0u32.to_le_bytes());
+        ext.extend_from_slice(&(FLAG_REFINE | FLAG_FASTSCAN).to_le_bytes());
+        ext.push(0u8);
+        ext.extend_from_slice(&64u32.to_le_bytes());
+        ext.extend_from_slice(
+            &vector
+                .iter()
+                .flat_map(|f| f.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let res = handle_search(&index, &ext).unwrap();
+        assert_eq!(u64::from_le_bytes(res[0..8].try_into().unwrap()), id);
+    }
+
+    #[test]
+    fn test_handle_batch_search_options_payload() {
+        let index = Arc::new(Mutex::new(IvfRabitqIndex::new(64)));
+        let v0: Vec<f32> = (0..64).map(|i| i as f32).collect();
+        let v1: Vec<f32> = (0..64).map(|i| (i + 64) as f32).collect();
+        let id0 = index.lock().unwrap().add(&v0);
+        let id1 = index.lock().unwrap().add(&v1);
+
+        let flags = FLAG_REFINE | FLAG_FASTSCAN;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&5u32.to_le_bytes()); // k
+        payload.extend_from_slice(&0u32.to_le_bytes()); // nprobe
+        payload.extend_from_slice(&flags.to_le_bytes());
+        payload.push(4u8); // query_bits
+        payload.extend_from_slice(&64u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes()); // num_queries
+        payload.extend_from_slice(&v0.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<_>>());
+        payload.extend_from_slice(&v1.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<_>>());
+
+        let res = handle_batch_search(&index, &payload).unwrap();
+        let mut offset = 0;
+
+        // 第一个查询结果
+        let len0 = u32::from_le_bytes(res[offset..offset + 4].try_into().unwrap()) as usize;
+        offset += 4;
+        assert!(len0 > 0);
+        assert_eq!(
+            u64::from_le_bytes(res[offset..offset + 8].try_into().unwrap()),
+            id0
+        );
+        offset += len0 * 12;
+
+        // 第二个查询结果
+        let len1 = u32::from_le_bytes(res[offset..offset + 4].try_into().unwrap()) as usize;
+        offset += 4;
+        assert!(len1 > 0);
+        assert_eq!(
+            u64::from_le_bytes(res[offset..offset + 8].try_into().unwrap()),
+            id1
+        );
     }
 }

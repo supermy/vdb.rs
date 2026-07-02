@@ -16,7 +16,7 @@
 - [x] 创建最小 README.md 结构（随功能迭代同步更新）
 - [x] `cargo fmt --check` 与 `cargo build` 通过
 
-**验收**：空骨架可编译；CI 七层测试目录存在；覆盖率命令可运行。
+**验收**：空骨架可编译；CI 八层测试目录存在；覆盖率命令可运行。
 
 ---
 
@@ -51,7 +51,7 @@
 ## 阶段 3：IVF 分区与最小可运行 Demo
 
 - [x] IVF 分区质心维护（k-means++ 初始化 + Lloyd 迭代）
-- [x] `num_partitions` 动态公式：`min(max(4, sqrt(N)), 65536)`，默认快速模式上限 128 可配置
+- [x] `num_partitions` 动态公式：`sqrt(N).clamp(4, 65536)`（`MIN_PARTITIONS=4`，`MAX_PARTITIONS=65536`）
 - [x] 向量分配到最近质心，构建 posting lists
 - [x] 内存中暴力 Flat baseline（用于召回验证）
 - [x] 最小 e2e smoke：insert → search → TopK 返回，日志前缀 `[SMOKE]`
@@ -83,7 +83,7 @@
 - [x] 精排层：Refine（原始向量）
 - [x] 精排层：SQ8（per-partition min/max 动态范围）
 - [x] FastScan（batch XOR-popcount）默认开启
-- [x] Query Quantization（1-8 bit，默认 0；8-bit 模式 QPS ×2，召回无损）
+- [x] Query Quantization（1-8 bit，默认 0；8-bit 模式 QPS ×2，召回率几乎无损）
 - [x] R*centroid 预计算（O(dim) 每分区）
 - [x] TopK 归并（跨分区最小堆）
 - [x] 集成测试：index + search + simd 端到端召回
@@ -104,46 +104,49 @@
 
 ---
 
-## 阶段 7：性能与稳定性测试（对应 TODO #1）
+## 阶段 7：性能与稳定性测试
 
-- [x] `src/benchmark.rs`：QPS / latency(p50,p99) / recall@k / build time 测量
+- [x] `src/benchmark.rs`：QPS / latency(p50,p99) / recall@k / build time 测量；支持 `--query-bits`、`--sq8-refine` 参数
 - [x] 测试矩阵：dim 64/128/256/512/768/1024 × N 1K~1M（>100K 且 dim>512 的组合在快速模式跳过）
-- [x] CI 压力门控：100K 插入 < 60s，100 次查询 < 10s（`tests/system.rs` 已覆盖）
+- [x] CI 压力门控：100K 插入 < 60s，100 次查询 < 10s（`tests/system.rs`；debug 模式下数据量减半至 50K/5K 以控制 CI 耗时，release 模式跑完整 100K）
 - [x] 内存稳定性：10K 连续插入后校验分区总向量数
 - [x] 系统测试：真实负载 10 万向量插入与搜索延迟门控
 - [x] 覆盖率报告：未覆盖路径以 `// untested:` 中文注释说明（核心模块已补充，benchmark/cli/server/fulltext/nng 等二进制/占位模块已标注）
+- [x] 性能测试示例：`examples/performance_benchmark.sh` 覆盖延迟/平衡/高召回/Query Quantization/SQ8 精排场景
+- [x] 真实数据 RAG 示例：`examples/hongloumeng_rag.sh` 端到端中文文本向量化与语义检索
 
-**验收**：`cargo run --bin vdb-benchmark` 全矩阵通过；CI 压力门控达标；覆盖率 ≥ 90%。
+**验收**：`cargo run --bin vdb-benchmark` 全矩阵通过；CI 压力门控达标。覆盖率目标 ≥ 90% 见全局验收 Checklist。
 
 ---
 
-## 阶段 8：NNG 高性能接口（对应 TODO #2）
+## 阶段 8：NNG 高性能接口
 
-- [x] `src/nng_server.rs`：TCP 二进制协议服务，监听 `tcp://0.0.0.0:9090`
+- [x] `src/nng_server.rs`：TCP 二进制协议服务，默认监听 `0.0.0.0:9090`（支持 `--listen` 参数自定义）
 - [x] 协议格式：`[4B length][1B cmd][payload]`
 - [x] 命令：PING(0x01)、SEARCH(0x02)、BATCH_SEARCH(0x03)、INSERT(0x04)、IMPORT_JSON(0x05)、EXPORT_JSON(0x06)
 - [x] 响应：`[4B length][1B code]`，错误码 0xFF
 - [x] **迁移到 POSIX socket 直接系统调用**（Unix 路径使用 libc socket/bind/listen/accept/recv/send）
-- [x] e2e 测试：二进制协议往返、大负载、并发连接（`tests/e2e.rs` 已覆盖）
+- [x] SEARCH/BATCH_SEARCH 扩展协议：支持 `flags`（refine/fastscan/sq8_refine）与 `query_bits`，兼容旧格式
+- [x] e2e 测试：二进制协议往返、扩展搜索选项、批量搜索选项（`tests/e2e.rs` 已覆盖）
 
 **验收**：NNG 路径延迟 < HTTP 路径；大负载不丢字节；e2e 测试通过。
 
 ---
 
-## 阶段 9：GPU 备选方案（对应 TODO #3）
+## 阶段 9：GPU 备选方案
 
 - [x] `src/gpu.rs`：三级后备 Metal(macOS) > CUDA(Linux/Win) > OpenCL(通用) 架构与 CPU fallback
 - [x] 内嵌三种 RaBitQ popcount kernel 源码
-- [x] `GpuDevice.batchRabitqPopcount()`，无 GPU 时 CPU SIMD fallback
-- [x] GPU fallback 微基准：无 GPU 场景延迟平滑
+- [x] `GpuDevice::batch_rabitq_popcount()`，无 GPU 时 CPU SIMD fallback
+- [x] GPU fallback 正确性测试：无 GPU 场景下结果与 CPU SIMD 一致（`test_gpu_fallback_matches_cpu`）
 - [x] 边缘场景编译开关：可完全关闭 GPU，仅依赖 CPU SIMD（`--no-default-features` 关闭 `gpu` feature）
 - [x] 验收测试：GPU fallback 路径通过
 
-**验收**：无真实 GPU 时全部测试通过；fallback 延迟与纯 SIMD 路径差异 < 5%。
+**验收**：无真实 GPU 时全部测试通过；fallback 结果与纯 SIMD 路径一致。（注：延迟差异 < 5% 的量化基准尚未实现，当前仅验证正确性。）
 
 ---
 
-## 阶段 10：默认测试页面（对应 TODO #4）
+## 阶段 10：默认测试页面
 
 - [x] `src/web/index.html` + `src/web/app.js` + `src/web/style.css`（llama-server 风格）
 - [x] `include_str!` 编译时嵌入到 `src/server.rs`，运行时无文件系统依赖
@@ -153,14 +156,15 @@
   - 对比分析（vdb.rs vs Milvus vs LanceDB）
   - 数据管理（索引状态、向量导入、导出、召回率测试）
 - [x] `src/server.rs`：OpenAI/Anthropic 兼容 HTTP API、**libevent evhttp C FFI**（替代 POSIX socket）、CORS、k≤256 保护
+- [x] `/batch_insert` 支持可选 `payloads` 数组，与 `Database::batch_insert_with_payload` 语义对齐
 - [x] 浏览器端 `console.log("[vdb.rust] action/response", ...)` 调试输出
-- [x] 服务器测试：HTTP 请求解析、分片组装、超限 413
+- [x] 服务器测试：HTTP 请求解析、分片组装、超限 413、batch_insert payload
 
 **验收**：浏览器打开即可完成单条/批量测试、数据导入导出；server 测试全绿。
 
 ---
 
-## 阶段 11：vs LanceDB & FAISS 性能对比（对应 TODO #5）
+## 阶段 11：vs LanceDB & FAISS 性能对比
 
 - [x] 确定标准数据集：SIFT1M / GIST1M / MS MARCO passage embeddings / DEEP1B 子集（已用 siftsmall 作为本地冒烟数据集）
 - [x] 统一对比环境：同一机器、同一维度、同一 nprobe/refine 配置（benchmark `--dataset` 模式已支持）
@@ -169,6 +173,7 @@
 - [ ] 64d 维度专项对比：vdb.rs vs LanceDB vs FAISS IVF_RaBitQ（阻塞项：需 64 维真实数据集及对照环境预置）
 - [ ] 扩展对比：dim 128/256/512/768/1024 下延迟-召回权衡（阻塞项：依赖 SIFT1M/DEEP1B 等更大规模数据集）
 - [x] 对比报告写入 README.md 与 CHANGELOG.md
+- [x] GitHub v0.1 release：多平台自动构建（Ubuntu/macOS/Windows），tag `v*` 触发 release workflow
 
 **验收**：128d 真实数据 Recall@10 ≥ 96%；报告可复现。
 
@@ -176,10 +181,15 @@
 
 ## 阶段 12：后续迭代（规划中）
 
+- [x] `src/sys_info.rs`：系统资源探测（CPU 核心数、物理内存）与参数推荐（`recommend_num_partitions`、`recommend_search_options`、`recommend_mmap_cache_bytes`），启发式常量已提取为命名常量
+- [x] CLI `vdb tune` 命令：自动检测系统资源并推荐性能参数
+- [x] `Database::batch_insert_with_payload`：批量插入带 payload，避免逐条插入产生索引版本快照膨胀
 - [ ] `src/fulltext.rs`：Tantivy C FFI 封装、倒排索引加载、段管理（阻塞项：需引入 Tantivy C FFI 或最小自实现倒排；当前为占位 API）
-- [x] `src/hybrid.rs`：向量 + 全文 + SQL 三路混合查询，RRF / 加权融合（RRF/加权融合核心算法已完成，`tests/hybrid.rs` 通过；全文路待 fulltext.rs 完成后替换为完整三路）
+- [x] `src/hybrid.rs`：RRF / 加权融合核心算法（`tests/hybrid.rs` 通过）
+- [ ] 完整三路混合查询：向量 + 全文 + SQL 融合（阻塞项：依赖 fulltext.rs 完成后接入第三路召回）
 - [ ] Tantivy 段合并与 Lance manifest 清理低峰期后台调度（阻塞项：依赖 fulltext.rs 与 manifest 清理策略）
-- [x] 混合查询正确性测试：`cargo test --test hybrid`（RRF/加权融合数学正确性已覆盖；完整三路融合待 fulltext 完成后补充）
+- [x] 混合查询正确性测试：`cargo test --test hybrid`（RRF/加权融合数学正确性已覆盖）
+- [ ] Codecov 覆盖率门控：在 `.github/workflows/ci.yml` 中设置覆盖率阈值，自动拦截 PR 回归
 
 ---
 
@@ -202,6 +212,6 @@
 - [x] `cargo test` 八层全绿（unit / integration / smoke / regression / acceptance / system / e2e / server）
 - [x] `cargo fmt --check` 通过
 - [x] `cargo clippy --all-targets -- -D warnings` 通过
-- [ ] 测试覆盖率 ≥ 90%，未覆盖路径有 `// untested:` 注释（当前整体行覆盖率约 79.84%，主要受 benchmark/cli/server/nng-server/fulltext 等二进制/占位模块拖累；核心库覆盖率：index_ivf_rq.rs 97.0%、storage.rs 92.5%、search.rs 93.2%、mmap_index.rs 90.1%、vdb.rs 98.7%；未覆盖路径已标注）
+- [ ] 测试覆盖率 ≥ 90%，未覆盖路径有 `// untested:` 注释（当前整体行覆盖率 80.01%，主要受 benchmark/cli/server/nng-server/fulltext 等二进制/占位模块拖累；核心库覆盖率：index_ivf_rq.rs 96.81%、storage.rs 92.51%、search.rs 93.50%、mmap_index.rs 90.08%、vdb.rs 98.43%、sys_info.rs 97.06%、sql.rs 93.49%、http_server.rs 85.00%、nng_server.rs 46.34%；未覆盖路径已标注。本次 TDD review 已补充 SQL 解析器错误路径、`<>`/Bool/TRUE/FALSE 操作符、OR 括号优先级、缺失字段处理、字符串分区下推、AND/OR 组合短路等 10 个测试用例，sql.rs 覆盖率从 87.30% 提升至 93.49%。系统测试在 debug 下数据量减半以控制 CI 耗时。）
 - [x] 真实数据 Recall@10 ≥ 96%：siftsmall（10K × 128d）nprobe=16 / refine_k=5000 时 Recall@10 = 0.994，nprobe=100 时 = 1.0
 - [ ] CI 多平台（Ubuntu/macOS/Windows）绿灯（阻塞项：需提交后由 GitHub Actions 运行）

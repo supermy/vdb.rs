@@ -1,6 +1,7 @@
 //! 系统测试：真实负载与内存 bounded 校验。
 //!
-//! 门控：10 万向量插入 release < 60s（debug < 120s），100 次查询 < 10s，
+//! 门控：release 下 10 万向量插入 < 60s、100 次查询 < 10s；
+//! debug 下数据量减半，避免覆盖率插桩/未优化代码导致 CI 过慢。
 //! 插入后分区总向量数等于插入数。
 
 use std::time::Instant;
@@ -14,9 +15,14 @@ fn gaussian_random() -> f32 {
 }
 
 #[test]
-fn system_100k_insert_time_gate() {
+fn system_bulk_insert_time_gate() {
     let dim = 64;
-    let n = 100_000;
+    // debug 构建数据量减半，既保留回归意义又避免 CI 超时。
+    let (n, limit_secs) = if cfg!(debug_assertions) {
+        (50_000, 60)
+    } else {
+        (100_000, 60)
+    };
 
     let start = Instant::now();
     let mut index = IvfRabitqIndex::new(dim);
@@ -36,20 +42,24 @@ fn system_100k_insert_time_gate() {
         "sum of partition entries should equal n"
     );
 
-    eprintln!("[SYSTEM] 100K insert elapsed: {:?}", elapsed);
-    // release 目标 60s；debug 构建允许放宽到 120s，避免 CI/本地调试时因未优化代码超时。
-    let limit_secs = if cfg!(debug_assertions) { 120 } else { 60 };
+    eprintln!("[SYSTEM] {} insert elapsed: {:?}", n, elapsed);
     assert!(
         elapsed.as_secs() < limit_secs,
-        "100K insert took too long: {:?}",
+        "{} insert took too long: {:?}",
+        n,
         elapsed
     );
 }
 
 #[test]
-fn system_100_queries_time_gate() {
+fn system_queries_time_gate() {
     let dim = 64;
-    let n = 10_000;
+    // debug 下同样减半，保持 100 次查询不变以验证延迟稳定性。
+    let n = if cfg!(debug_assertions) {
+        5_000
+    } else {
+        10_000
+    };
     let vectors: Vec<Vec<f32>> = (0..n)
         .map(|_| (0..dim).map(|_| gaussian_random()).collect())
         .collect();

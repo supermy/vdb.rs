@@ -7,6 +7,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::thread;
 use std::time::Duration;
+use vdb_rs::search::{SearchOptions, search};
 
 const RESP_OK: u8 = 0x00;
 const RESP_ERR: u8 = 0xFF;
@@ -16,6 +17,124 @@ const CMD_BATCH_SEARCH: u8 = 0x03;
 const CMD_INSERT: u8 = 0x04;
 const CMD_IMPORT_JSON: u8 = 0x05;
 const CMD_EXPORT_JSON: u8 = 0x06;
+
+const FLAG_REFINE: u32 = 1 << 0;
+const FLAG_FASTSCAN: u32 = 1 << 1;
+const FLAG_SQ8_REFINE: u32 = 1 << 2;
+
+fn parse_e2e_search_payload(payload: &[u8]) -> Option<(SearchOptions, Vec<f32>)> {
+    if payload.len() < 12 {
+        return None;
+    }
+    let k = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
+    let nprobe = u32::from_le_bytes(payload[4..8].try_into().unwrap()) as usize;
+    if payload.len() >= 17 {
+        let flags = u32::from_le_bytes(payload[8..12].try_into().unwrap());
+        let query_bits = payload[12];
+        let dim = u32::from_le_bytes(payload[13..17].try_into().unwrap()) as usize;
+        if payload.len() == 17 + dim * 4 {
+            let vector: Vec<f32> = payload[17..]
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+                .collect();
+            return Some((
+                SearchOptions {
+                    k,
+                    nprobe,
+                    refine: flags & FLAG_REFINE != 0,
+                    refine_k: k * 10,
+                    fastscan: flags & FLAG_FASTSCAN != 0,
+                    query_bits,
+                    sq8_refine: flags & FLAG_SQ8_REFINE != 0,
+                    sql_filter: None,
+                },
+                vector,
+            ));
+        }
+    }
+    let dim = u32::from_le_bytes(payload[8..12].try_into().unwrap()) as usize;
+    if payload.len() == 12 + dim * 4 {
+        let vector: Vec<f32> = payload[12..]
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        return Some((
+            SearchOptions {
+                k,
+                nprobe,
+                refine: true,
+                refine_k: k * 10,
+                fastscan: true,
+                query_bits: 0,
+                sq8_refine: false,
+                sql_filter: None,
+            },
+            vector,
+        ));
+    }
+    None
+}
+
+fn parse_e2e_batch_search_payload(
+    payload: &[u8],
+) -> Option<(SearchOptions, usize, usize, Vec<f32>)> {
+    if payload.len() < 16 {
+        return None;
+    }
+    let k = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
+    let nprobe = u32::from_le_bytes(payload[4..8].try_into().unwrap()) as usize;
+    if payload.len() >= 21 {
+        let flags = u32::from_le_bytes(payload[8..12].try_into().unwrap());
+        let query_bits = payload[12];
+        let dim = u32::from_le_bytes(payload[13..17].try_into().unwrap()) as usize;
+        let num_queries = u32::from_le_bytes(payload[17..21].try_into().unwrap()) as usize;
+        if payload.len() == 21 + num_queries * dim * 4 {
+            let vectors: Vec<f32> = payload[21..]
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+                .collect();
+            return Some((
+                SearchOptions {
+                    k,
+                    nprobe,
+                    refine: flags & FLAG_REFINE != 0,
+                    refine_k: k * 10,
+                    fastscan: flags & FLAG_FASTSCAN != 0,
+                    query_bits,
+                    sq8_refine: flags & FLAG_SQ8_REFINE != 0,
+                    sql_filter: None,
+                },
+                dim,
+                num_queries,
+                vectors,
+            ));
+        }
+    }
+    let dim = u32::from_le_bytes(payload[8..12].try_into().unwrap()) as usize;
+    let num_queries = u32::from_le_bytes(payload[12..16].try_into().unwrap()) as usize;
+    if payload.len() == 16 + num_queries * dim * 4 {
+        let vectors: Vec<f32> = payload[16..]
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        return Some((
+            SearchOptions {
+                k,
+                nprobe,
+                refine: true,
+                refine_k: k * 10,
+                fastscan: true,
+                query_bits: 0,
+                sq8_refine: false,
+                sql_filter: None,
+            },
+            dim,
+            num_queries,
+            vectors,
+        ));
+    }
+    None
+}
 
 fn write_message(stream: &mut TcpStream, cmd: u8, payload: &[u8]) -> std::io::Result<()> {
     let len = (1 + payload.len()) as u32;
@@ -82,72 +201,38 @@ fn start_test_server() -> u16 {
                                 }
                             }
                         }
-                        CMD_SEARCH => {
-                            if payload.len() < 12 {
-                                Err("short".to_string())
-                            } else {
-                                let k =
-                                    u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
-                                let nprobe =
-                                    u32::from_le_bytes(payload[4..8].try_into().unwrap()) as usize;
-                                let dim =
-                                    u32::from_le_bytes(payload[8..12].try_into().unwrap()) as usize;
-                                let vector: Vec<f32> = payload[12..]
-                                    .chunks_exact(4)
-                                    .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
-                                    .collect();
-                                if vector.len() != dim {
-                                    Err("dim mismatch".to_string())
-                                } else {
-                                    let results = index.lock().unwrap().search(&vector, k, nprobe);
-                                    let mut out = Vec::with_capacity(results.len() * 12);
+                        CMD_SEARCH => match parse_e2e_search_payload(payload) {
+                            Some((options, vector)) => {
+                                let results =
+                                    search(&index.lock().unwrap(), &vector, &options, None);
+                                let mut out = Vec::with_capacity(results.len() * 12);
+                                for (id, dist) in results {
+                                    out.extend_from_slice(&id.to_le_bytes());
+                                    out.extend_from_slice(&dist.to_le_bytes());
+                                }
+                                Ok(out)
+                            }
+                            None => Err("search payload format error".to_string()),
+                        },
+                        CMD_BATCH_SEARCH => match parse_e2e_batch_search_payload(payload) {
+                            Some((options, dim, num_queries, vectors)) => {
+                                let idx = index.lock().unwrap();
+                                let mut out = Vec::new();
+                                out.extend_from_slice(&(num_queries as u32).to_le_bytes());
+                                for q in 0..num_queries {
+                                    let start = q * dim;
+                                    let vector: Vec<f32> = vectors[start..start + dim].to_vec();
+                                    let results = search(&idx, &vector, &options, None);
+                                    out.extend_from_slice(&(results.len() as u32).to_le_bytes());
                                     for (id, dist) in results {
                                         out.extend_from_slice(&id.to_le_bytes());
                                         out.extend_from_slice(&dist.to_le_bytes());
                                     }
-                                    Ok(out)
                                 }
+                                Ok(out)
                             }
-                        }
-                        CMD_BATCH_SEARCH => {
-                            if payload.len() < 16 {
-                                Err("short".to_string())
-                            } else {
-                                let k =
-                                    u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
-                                let nprobe =
-                                    u32::from_le_bytes(payload[4..8].try_into().unwrap()) as usize;
-                                let dim =
-                                    u32::from_le_bytes(payload[8..12].try_into().unwrap()) as usize;
-                                let num_queries =
-                                    u32::from_le_bytes(payload[12..16].try_into().unwrap())
-                                        as usize;
-                                let expected_bytes = num_queries * dim * 4;
-                                if payload.len() < 16 + expected_bytes {
-                                    Err("short queries".to_string())
-                                } else {
-                                    let idx = index.lock().unwrap();
-                                    let mut out = Vec::new();
-                                    out.extend_from_slice(&(num_queries as u32).to_le_bytes());
-                                    for q in 0..num_queries {
-                                        let start = 16 + q * dim * 4;
-                                        let vector: Vec<f32> = payload[start..start + dim * 4]
-                                            .chunks_exact(4)
-                                            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
-                                            .collect();
-                                        let results = idx.search(&vector, k, nprobe);
-                                        out.extend_from_slice(
-                                            &(results.len() as u32).to_le_bytes(),
-                                        );
-                                        for (id, dist) in results {
-                                            out.extend_from_slice(&id.to_le_bytes());
-                                            out.extend_from_slice(&dist.to_le_bytes());
-                                        }
-                                    }
-                                    Ok(out)
-                                }
-                            }
-                        }
+                            None => Err("batch search payload format error".to_string()),
+                        },
                         CMD_IMPORT_JSON => {
                             let json: serde_json::Value = match serde_json::from_slice(payload) {
                                 Ok(v) => v,
@@ -334,4 +419,87 @@ fn e2e_nng_import_json() {
     assert_eq!(code2, RESP_OK);
     let exported: Vec<Option<Vec<f32>>> = serde_json::from_slice(&data2).unwrap();
     assert_eq!(exported.len(), 4);
+}
+
+#[test]
+fn e2e_nng_search_with_options() {
+    let port = start_test_server();
+    thread::sleep(Duration::from_millis(50));
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+
+    let vector: Vec<f32> = (0..64).map(|i| i as f32).collect();
+    let mut insert_payload = Vec::new();
+    insert_payload.extend_from_slice(&(64u32).to_le_bytes());
+    insert_payload.extend_from_slice(
+        &vector
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect::<Vec<_>>(),
+    );
+    write_message(&mut stream, CMD_INSERT, &insert_payload).unwrap();
+    let (code, _) = read_response(&mut stream).unwrap();
+    assert_eq!(code, RESP_OK);
+
+    // 新扩展协议：开启 refine + fastscan + 4-bit query quantization
+    let flags = FLAG_REFINE | FLAG_FASTSCAN;
+    let mut search_payload = Vec::new();
+    search_payload.extend_from_slice(&(10u32).to_le_bytes());
+    search_payload.extend_from_slice(&(0u32).to_le_bytes());
+    search_payload.extend_from_slice(&flags.to_le_bytes());
+    search_payload.push(4u8);
+    search_payload.extend_from_slice(&(64u32).to_le_bytes());
+    search_payload.extend_from_slice(
+        &vector
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect::<Vec<_>>(),
+    );
+    write_message(&mut stream, CMD_SEARCH, &search_payload).unwrap();
+
+    let (code2, data2) = read_response(&mut stream).unwrap();
+    assert_eq!(code2, RESP_OK);
+    assert!(!data2.is_empty());
+    let first_id = u64::from_le_bytes(data2[0..8].try_into().unwrap());
+    assert_eq!(first_id, 0);
+}
+
+#[test]
+fn e2e_nng_batch_search_with_options() {
+    let port = start_test_server();
+    thread::sleep(Duration::from_millis(50));
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+
+    let vectors: Vec<Vec<f32>> = (0..5)
+        .map(|i| (0..64).map(|j| (i * 64 + j) as f32).collect())
+        .collect();
+    for v in &vectors {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&(64u32).to_le_bytes());
+        payload.extend_from_slice(&v.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<_>>());
+        write_message(&mut stream, CMD_INSERT, &payload).unwrap();
+        let (code, _) = read_response(&mut stream).unwrap();
+        assert_eq!(code, RESP_OK);
+    }
+
+    let flags = FLAG_REFINE | FLAG_FASTSCAN;
+    let mut batch_payload = Vec::new();
+    batch_payload.extend_from_slice(&(3u32).to_le_bytes());
+    batch_payload.extend_from_slice(&(0u32).to_le_bytes());
+    batch_payload.extend_from_slice(&flags.to_le_bytes());
+    batch_payload.push(4u8);
+    batch_payload.extend_from_slice(&(64u32).to_le_bytes());
+    batch_payload.extend_from_slice(&(2u32).to_le_bytes());
+    for v in &vectors[..2] {
+        batch_payload
+            .extend_from_slice(&v.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<_>>());
+    }
+    write_message(&mut stream, CMD_BATCH_SEARCH, &batch_payload).unwrap();
+
+    let (code, data) = read_response(&mut stream).unwrap();
+    assert_eq!(code, RESP_OK);
+    assert!(!data.is_empty());
+    let returned_queries = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    assert_eq!(returned_queries, 2);
 }

@@ -119,7 +119,7 @@ impl Database {
         let first_id = {
             let mut index = self.index.write().unwrap();
             let mut first = None;
-            for (vector, payload) in vectors.iter().zip(payloads.into_iter()) {
+            for (vector, payload) in vectors.iter().zip(payloads) {
                 let id = index.add_with_payload(vector, payload);
                 if first.is_none() {
                     first = Some(id);

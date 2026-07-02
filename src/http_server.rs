@@ -516,6 +516,8 @@ fn handle_insert(index: &Arc<Mutex<IvfRabitqIndex>>, body: &str) -> (u16, String
 #[derive(Debug, Deserialize)]
 struct BatchInsertRequest {
     vectors: Vec<Vec<f32>>,
+    #[serde(default)]
+    payloads: Option<Vec<Payload>>,
 }
 
 fn handle_batch_insert(index: &Arc<Mutex<IvfRabitqIndex>>, body: &str) -> (u16, String, Vec<u8>) {
@@ -528,8 +530,20 @@ fn handle_batch_insert(index: &Arc<Mutex<IvfRabitqIndex>>, body: &str) -> (u16, 
 
     let mut idx = index.lock().unwrap();
     let mut ids = Vec::with_capacity(req.vectors.len());
-    for vector in req.vectors {
-        ids.push(idx.add(&vector));
+    if let Some(payloads) = req.payloads {
+        if payloads.len() != req.vectors.len() {
+            return json_response(
+                400,
+                &serde_json::json!({ "error": "vectors and payloads length mismatch" }),
+            );
+        }
+        for (vector, payload) in req.vectors.into_iter().zip(payloads) {
+            ids.push(idx.add_with_payload(&vector, payload));
+        }
+    } else {
+        for vector in req.vectors {
+            ids.push(idx.add(&vector));
+        }
     }
     json_response(200, &serde_json::json!({ "ids": ids }))
 }

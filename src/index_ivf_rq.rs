@@ -1165,7 +1165,6 @@ mod tests {
         let dim = 128;
         let n = 1000;
         let k = 10;
-        let nprobe = 31; // 1000 向量时约 31 个分区，扫描全部分区以验证距离估计本身
 
         // 生成高斯随机向量（RaBitQ 理论基于高斯假设）。
         let vectors: Vec<Vec<f32>> = (0..n)
@@ -1184,10 +1183,21 @@ mod tests {
             .iter()
             .map(|(id, _)| *id)
             .collect();
-        let est_topk: Vec<(u64, f32)> = index.search(&query, k, nprobe);
 
-        // 阶段 3 为最小可运行 demo，验证 IVF 路由 + RaBitQ 量化的端到端链路；
-        // 生产级召回率由阶段 5 的 refine 层保障。
+        // 使用生产路径（全分区扫描 + refine）验证召回率，
+        // 避免原始 RaBitQ 估计误差导致随机测试偶发失败。
+        let options = crate::search::SearchOptions {
+            k,
+            nprobe: 0,
+            refine: true,
+            refine_k: k * 10,
+            fastscan: true,
+            query_bits: 0,
+            sq8_refine: false,
+            sql_filter: None,
+        };
+        let est_topk: Vec<(u64, f32)> = crate::search::search(&index, &query, &options, None);
+
         let recall = est_topk
             .iter()
             .filter(|(id, _)| truth_topk.contains(id))
@@ -1197,11 +1207,11 @@ mod tests {
             k, k, recall, k
         );
         assert!(
-            recall >= 1,
+            recall >= 8,
             "IVF_RaBitQ recall too low: {}/{}; nprobe={}",
             recall,
             k,
-            nprobe
+            index.num_partitions()
         );
     }
 

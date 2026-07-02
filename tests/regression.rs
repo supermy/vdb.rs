@@ -7,6 +7,7 @@ use tempfile::TempDir;
 use vdb_rs::index_ivf_rq::{IvfRabitqIndex, RabitqConfig, RabitqQuantizer};
 use vdb_rs::search::{SearchOptions, search};
 use vdb_rs::simd::{dot_product, l2_distance_squared};
+use vdb_rs::sql::{can_partition_match, parse_sql_filter};
 use vdb_rs::storage::{load_index, save_index};
 
 fn gaussian_random() -> f32 {
@@ -216,4 +217,139 @@ fn regression_rabitq_distance_is_nonnegative() {
         "estimated distance should be finite and non-negative, got {}",
         dist
     );
+}
+
+/// 验证 SQL 谓词下推对数值字段的范围判断：
+/// 当分区统计已知时，Lt/Le/Gt/Ge/Eq 应能正确剪枝。
+#[test]
+fn regression_sql_partition_pushdown_numeric() {
+    use vdb_rs::index_ivf_rq::PartitionStats;
+
+    let mut stats = PartitionStats::new();
+    let mut payload = serde_json::Map::new();
+    payload.insert("score".to_string(), serde_json::json!(50));
+    stats.update(&payload);
+
+    // 分区 score 范围 [50, 50]。
+    assert!(!can_partition_match(
+        &parse_sql_filter("score = 30").unwrap(),
+        &stats
+    ));
+    assert!(!can_partition_match(
+        &parse_sql_filter("score > 60").unwrap(),
+        &stats
+    ));
+    assert!(!can_partition_match(
+        &parse_sql_filter("score >= 51").unwrap(),
+        &stats
+    ));
+    assert!(!can_partition_match(
+        &parse_sql_filter("score < 50").unwrap(),
+        &stats
+    ));
+    assert!(!can_partition_match(
+        &parse_sql_filter("score <= 49").unwrap(),
+        &stats
+    ));
+    assert!(can_partition_match(
+        &parse_sql_filter("score = 50").unwrap(),
+        &stats
+    ));
+    assert!(can_partition_match(
+        &parse_sql_filter("score >= 50").unwrap(),
+        &stats
+    ));
+    assert!(can_partition_match(
+        &parse_sql_filter("score <= 50").unwrap(),
+        &stats
+    ));
+
+    // IN 列表中只要有一个命中范围即保留。
+    assert!(can_partition_match(
+        &parse_sql_filter("score IN (40, 50, 60)").unwrap(),
+        &stats
+    ));
+    assert!(!can_partition_match(
+        &parse_sql_filter("score IN (40, 60)").unwrap(),
+        &stats
+    ));
+}
+
+/// 验证 SQL 谓词下推对字符串字段的集合判断：
+/// 当分区字符串取值集合已知时，Eq/In 应能正确剪枝。
+#[test]
+fn regression_sql_partition_pushdown_string() {
+    use vdb_rs::index_ivf_rq::PartitionStats;
+
+    let mut stats = PartitionStats::new();
+    let mut payload = serde_json::Map::new();
+    payload.insert("tag".to_string(), serde_json::json!("a"));
+    stats.update(&payload);
+    let mut payload2 = serde_json::Map::new();
+    payload2.insert("tag".to_string(), serde_json::json!("b"));
+    stats.update(&payload2);
+
+    // 分区 tag 取值集合 {a, b}。
+    assert!(can_partition_match(
+        &parse_sql_filter("tag = 'a'").unwrap(),
+        &stats
+    ));
+    assert!(can_partition_match(
+        &parse_sql_filter("tag = 'b'").unwrap(),
+        &stats
+    ));
+    assert!(!can_partition_match(
+        &parse_sql_filter("tag = 'c'").unwrap(),
+        &stats
+    ));
+
+    // IN 列表中只要有一个命中集合即保留。
+    assert!(can_partition_match(
+        &parse_sql_filter("tag IN ('a', 'c')").unwrap(),
+        &stats
+    ));
+    assert!(!can_partition_match(
+        &parse_sql_filter("tag IN ('c', 'd')").unwrap(),
+        &stats
+    ));
+
+    // Ne 对字符串保守返回 true（不能基于集合剪枝）。
+    assert!(can_partition_match(
+        &parse_sql_filter("tag != 'a'").unwrap(),
+        &stats
+    ));
+
+    // 字段不存在于分区统计时保守返回 true。
+    assert!(can_partition_match(
+        &parse_sql_filter("missing = 'x'").unwrap(),
+        &stats
+    ));
+}
+
+/// 验证 SQL 谓词下推对 AND/OR 组合的短路语义：
+/// AND 中任一子谓词不可满足则整个分区可跳过；OR 中两个都不可满足才跳过。
+#[test]
+fn regression_sql_partition_pushdown_and_or() {
+    use vdb_rs::index_ivf_rq::PartitionStats;
+
+    let mut stats = PartitionStats::new();
+    let mut payload = serde_json::Map::new();
+    payload.insert("score".to_string(), serde_json::json!(50));
+    stats.update(&payload);
+
+    // AND：score=30 不可满足，整个 AND 不可满足。
+    assert!(!can_partition_match(
+        &parse_sql_filter("score = 30 AND score = 50").unwrap(),
+        &stats
+    ));
+    // OR：score=30 不可满足但 score=50 可满足，整个 OR 可满足。
+    assert!(can_partition_match(
+        &parse_sql_filter("score = 30 OR score = 50").unwrap(),
+        &stats
+    ));
+    // OR：两侧都不可满足。
+    assert!(!can_partition_match(
+        &parse_sql_filter("score = 30 OR score = 40").unwrap(),
+        &stats
+    ));
 }

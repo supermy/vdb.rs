@@ -123,3 +123,76 @@ fn acceptance_save_load_recall() {
     let recall = results.iter().filter(|(id, _)| truth.contains(id)).count();
     assert!(recall >= 5, "acceptance recall too low: {}/10", recall);
 }
+
+/// 批量插入 + compact：验证 batch_insert_with_payload 只生成一个版本快照，
+/// 且 compact 能安全清理旧版本。
+#[test]
+fn acceptance_database_batch_insert_and_compact() {
+    let dir = TempDir::new().unwrap();
+    let db = Database::create(dir.path(), 64).unwrap();
+
+    // 初始创建会写入 index-0.vdb。
+    let mut vectors = Vec::new();
+    let mut payloads = Vec::new();
+    for i in 0..5 {
+        let v: Vec<f32> = (0..64).map(|_| rand::random::<f32>()).collect();
+        let mut payload = serde_json::Map::new();
+        payload.insert("idx".to_string(), serde_json::json!(i));
+        vectors.push(v);
+        payloads.push(payload);
+    }
+    let first_id = db.batch_insert_with_payload(&vectors, payloads).unwrap();
+    assert_eq!(first_id, 0);
+
+    let stats = db.stats();
+    assert_eq!(stats.num_vectors, 5);
+
+    // 再逐条插入一次，产生另一个全量快照，用于验证 compact 清理旧版本。
+    let extra: Vec<f32> = (0..64).map(|_| rand::random::<f32>()).collect();
+    db.insert(&extra).unwrap();
+    assert_eq!(db.stats().num_vectors, 6);
+
+    let removed = db.compact().unwrap();
+    assert!(
+        removed >= 1,
+        "compact should remove at least one old snapshot"
+    );
+
+    // 验证只保留 manifest 指向的最新 index 文件。
+    let manifest_index = std::fs::read_to_string(dir.path().join("manifest.json")).unwrap();
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_index).unwrap();
+    let index_file = manifest["index_file"].as_str().unwrap();
+    let mut index_files: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.ok()?.file_name().to_str()?.to_string();
+            if name.starts_with("index-") && name.ends_with(".vdb") {
+                Some(name)
+            } else {
+                None
+            }
+        })
+        .collect();
+    index_files.sort();
+    assert_eq!(index_files, vec![index_file.to_string()]);
+
+    // reopen 后数据应一致。
+    let db2 = Database::open(dir.path()).unwrap();
+    assert_eq!(db2.stats().num_vectors, 6);
+
+    // 通过 payload 搜索验证批量插入的向量可检索。
+    let query = vectors[0].clone();
+    let options = SearchOptions {
+        k: 6,
+        nprobe: 0,
+        refine: true,
+        refine_k: 50,
+        fastscan: true,
+        query_bits: 0,
+        sq8_refine: false,
+        sql_filter: Some("idx = 0".to_string()),
+    };
+    let results = db2.search(&query, &options);
+    assert!(!results.is_empty());
+    assert!(results.iter().any(|(id, _)| *id == 0));
+}

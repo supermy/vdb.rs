@@ -15,6 +15,7 @@
 lcov.info
 coverage.json
 *.lcov
+coverage.txt
 
 # Python environment artifacts
 __pycache__

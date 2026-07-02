@@ -44,6 +44,12 @@ struct Args {
     /// Disable fastscan
     #[arg(long)]
     no_fastscan: bool,
+    /// Query quantization bits (0 = disable)
+    #[arg(long, default_value_t = 0)]
+    query_bits: u8,
+    /// Use SQ8 refine for reranking
+    #[arg(long)]
+    sq8_refine: bool,
     /// 输出 JSON 报告文件路径
     #[arg(long)]
     output: Option<String>,
@@ -107,6 +113,8 @@ struct BenchmarkReport {
     n: usize,
     k: usize,
     nprobe: usize,
+    query_bits: u8,
+    sq8_refine: bool,
     build_time_ms: u128,
     qps: f64,
     p50_ms: f64,
@@ -171,8 +179,8 @@ fn run_single(args: &Args) -> BenchmarkReport {
         refine: !args.no_refine,
         refine_k,
         fastscan: !args.no_fastscan,
-        query_bits: 0,
-        sq8_refine: false,
+        query_bits: args.query_bits,
+        sq8_refine: args.sq8_refine,
         sql_filter: None,
     };
 
@@ -225,6 +233,8 @@ fn run_single(args: &Args) -> BenchmarkReport {
         n,
         k,
         nprobe: args.nprobe,
+        query_bits: args.query_bits,
+        sq8_refine: args.sq8_refine,
         build_time_ms: build_time.as_millis(),
         qps,
         p50_ms: p50.as_secs_f64() * 1000.0,
@@ -259,6 +269,8 @@ fn main() {
                     no_refine: args.no_refine,
                     refine_k: args.refine_k,
                     no_fastscan: args.no_fastscan,
+                    query_bits: args.query_bits,
+                    sq8_refine: args.sq8_refine,
                     output: None,
                     matrix: false,
                     dataset: None,

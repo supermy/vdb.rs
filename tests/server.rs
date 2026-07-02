@@ -187,6 +187,71 @@ fn server_insert_and_search_roundtrip() {
 }
 
 #[test]
+fn server_batch_insert_roundtrip() {
+    let handle = start_server();
+    let port = handle.port;
+
+    let vectors: Vec<Vec<f32>> = (0..3)
+        .map(|i| (0..64).map(|j| (i * 64 + j) as f32).collect())
+        .collect();
+    let payloads = vec![
+        serde_json::json!({ "idx": 0 }),
+        serde_json::json!({ "idx": 1 }),
+        serde_json::json!({ "idx": 2 }),
+    ];
+    let body = serde_json::json!({ "vectors": vectors, "payloads": payloads }).to_string();
+    let request = format!(
+        "POST /batch_insert HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let response = http_request(port, &request);
+    assert!(response.contains("HTTP/1.1 200"));
+    assert!(response.contains("\"ids\""));
+    assert!(response.contains("0"));
+    assert!(response.contains("1"));
+    assert!(response.contains("2"));
+
+    // 搜索其中一条向量，确认批量插入生效。
+    let search_body = serde_json::json!({
+        "query": vectors[1],
+        "k": 3,
+        "nprobe": 0,
+    })
+    .to_string();
+    let request = format!(
+        "POST /search HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
+        search_body.len(),
+        search_body
+    );
+    let response = http_request(port, &request);
+    assert!(response.contains("HTTP/1.1 200"));
+    assert!(response.contains("\"results\""));
+    handle.stop();
+}
+
+#[test]
+fn server_batch_insert_payload_length_mismatch() {
+    let handle = start_server();
+    let port = handle.port;
+
+    let vectors: Vec<Vec<f32>> = (0..3)
+        .map(|i| (0..64).map(|j| (i * 64 + j) as f32).collect())
+        .collect();
+    let payloads = vec![serde_json::json!({ "idx": 0 })];
+    let body = serde_json::json!({ "vectors": vectors, "payloads": payloads }).to_string();
+    let request = format!(
+        "POST /batch_insert HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let response = http_request(port, &request);
+    assert!(response.contains("HTTP/1.1 400"));
+    assert!(response.contains("vectors and payloads length mismatch"));
+    handle.stop();
+}
+
+#[test]
 fn server_k_limit_enforced() {
     let handle = start_server();
 
