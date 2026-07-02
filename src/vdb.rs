@@ -161,6 +161,29 @@ impl Database {
         Ok(())
     }
 
+    /// 清理旧版本索引文件，只保留 manifest 指向的最新版本。
+    ///
+    /// 为什么需要 compact：append-only 设计下每次写入都会生成新的 index-N.vdb，
+    /// 长期运行会积累大量旧版本。compact 释放这些历史快照占用的磁盘空间，
+    /// 同时保证当前 manifest 原子性不被破坏。
+    pub fn compact(&self) -> std::io::Result<usize> {
+        let _write_guard = self.write_lock.lock().unwrap();
+        let manifest = self.manifest.lock().unwrap();
+        let keep = self.dir.join(&manifest.index_file);
+        let mut removed = 0;
+        for entry in fs::read_dir(&self.dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.starts_with("index-") && name.ends_with(".vdb") && path != keep {
+                    fs::remove_file(&path)?;
+                    removed += 1;
+                }
+            }
+        }
+        Ok(removed)
+    }
+
     fn save_index_file(&self, manifest: &Manifest) -> std::io::Result<()> {
         let index = self.index.read().unwrap();
         let path = self.dir.join(&manifest.index_file);

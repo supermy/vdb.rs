@@ -29,6 +29,9 @@
 - `src/sys_info.rs`：系统资源探测（CPU 核心数、物理内存）与检索参数推荐，提供 `recommend_search_options`、`recommend_num_partitions`、`recommend_mmap_cache_bytes`。
 - CLI 完整实现：`vdb create`、`vdb insert`、`vdb batch-insert`、`vdb search`、`vdb tune`，支持 payload、SQL 过滤与自动参数推荐。
 - `Database::batch_insert_with_payload`：内存中批量追加向量后一次性保存，避免逐条写入产生大量全量索引快照，显著降低磁盘占用。
+- `Database::compact`：清理旧版本 `index-N.vdb` 文件，只保留 manifest 指向的最新版本，回收 time-travel 快照占用的空间。
+- CLI 新增 `vdb compact` 命令。
+- `examples/text_to_vectors.py` 增加精确重复块去重。
 - HTTP Server 支持服务器级默认搜索参数：`--default-k`、`--default-nprobe`、`--default-refine-k`、`--default-query-bits` 等，请求体可继续覆盖；`/search` 新增 `fastscan`、`query_bits`、`sq8_refine` 字段。
 - NNG Server 支持 `--listen` 与 `--dim` 启动参数，消除硬编码地址与维度。
 - `.github/workflows/ci.yml` 新增 `release` job：在 `v*` 标签推送时自动构建 Ubuntu/macOS/Windows release 二进制并上传至 GitHub Release。

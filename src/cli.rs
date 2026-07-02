@@ -95,6 +95,12 @@ enum Commands {
         #[arg(long, default_value_t = 10)]
         k: usize,
     },
+    /// 清理旧版本索引文件，只保留最新版本
+    Compact {
+        /// 数据库目录
+        #[arg(long)]
+        dir: PathBuf,
+    },
 }
 
 fn parse_vector(s: &str) -> Result<Vec<f32>, String> {
@@ -268,6 +274,11 @@ fn run(command: Commands) -> Result<(), String> {
                 opts.recall.fastscan,
                 opts.recall.recall_target
             );
+        }
+        Commands::Compact { dir } => {
+            let db = Database::open(&dir).map_err(|e| e.to_string())?;
+            let removed = db.compact().map_err(|e| e.to_string())?;
+            println!("[compact] removed {} old index file(s)", removed);
         }
     }
     Ok(())

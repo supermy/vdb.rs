@@ -381,6 +381,9 @@ cargo run --bin vdb -- search --dir ./data/mydb \
 # 批量插入（推荐用于生产导入，避免单条插入产生大量全量快照）
 cargo run --bin vdb -- batch-insert --dir ./data/mydb --file vectors.jsonl
 
+# 清理旧版本索引文件（time-travel 快照），只保留 manifest 指向的最新版本
+cargo run --bin vdb -- compact --dir ./data/mydb
+
 # SQL 过滤搜索
 cargo run --bin vdb -- search --dir ./data/mydb \
   --query "[0.1, 0.2, ..., 0.128]" \
@@ -426,7 +429,9 @@ LIMIT=500 \
 
 > 注意：示例默认 `LIMIT=20`，以便在 CPU 上快速跑完。`Qwen3-Embedding-0.6B` 在 CPU 上约 10 秒/块，扩大 `LIMIT` 前请确认可接受耗时。
 
-> 磁盘占用说明：本示例使用 `vdb batch-insert` 一次性写入，数据库仅包含 1 个有效版本（约 8 MB，主要由 1024×1024 旋转矩阵决定）。若使用 `vdb insert` 逐条写入，`Database::insert_with_payload` 每次都会保存一个全量索引快照，N 条记录会产生 N 个 ~4 MB 的版本文件，导致数据剧烈膨胀。生产导入请务必使用批量接口。
+> 磁盘占用说明：本示例使用 `vdb batch-insert` 一次性写入，数据库仅包含 1 个有效版本（约 8 MB，主要由 1024×1024 旋转矩阵决定）。若使用 `vdb insert` 逐条写入，`Database::insert_with_payload` 每次都会保存一个全量索引快照，N 条记录会产生 N 个 ~4 MB 的版本文件，导致数据剧烈膨胀。生产导入请务必使用批量接口；若已产生旧版本，可运行 `vdb compact --dir <dir>` 清理。
+>
+> 文本去重：`examples/text_to_vectors.py` 已去掉完全相同的重复块，减少嵌入与存储冗余。
 
 核心辅助脚本：
 - `examples/text_to_vectors.py`：文本分块 + llama-embedding 分批生成向量；

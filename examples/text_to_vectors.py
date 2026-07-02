@@ -149,9 +149,17 @@ def main():
     print(f"[text2vec] text length: {len(text)} chars")
 
     chunks = chunk_text(text, args.chunk_size, args.chunk_overlap)
+    # 去掉完全重复的块，避免嵌入和存储重复文本
+    seen = set()
+    unique_chunks = []
+    for c in chunks:
+        if c not in seen:
+            seen.add(c)
+            unique_chunks.append(c)
+    chunks = unique_chunks
     if args.limit > 0:
         chunks = chunks[: args.limit]
-    print(f"[text2vec] chunks: {len(chunks)}")
+    print(f"[text2vec] unique chunks: {len(chunks)}")
 
     print(f"[text2vec] embedding with {args.model}, batch_size={args.batch_size}")
     embeddings = embed_texts(chunks, args.model, args.batch_size)
