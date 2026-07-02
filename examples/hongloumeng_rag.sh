@@ -30,7 +30,7 @@ INPUT_TXT="${INPUT_TXT:-../models/data/txt/红楼梦.txt}"
 EMBED_MODEL="${EMBED_MODEL:-../models/Qwen3-Embedding-0.6B-Q8_0.gguf}"
 CHUNK_SIZE="${CHUNK_SIZE:-256}"
 CHUNK_OVERLAP="${CHUNK_OVERLAP:-32}"
-LIMIT="${LIMIT:-200}"
+LIMIT="${LIMIT:-20}"
 DB_DIR="${DB_DIR:-./data/hongloumeng_db}"
 VECTOR_FILE="${VECTOR_FILE:-./data/hongloumeng_vectors.json}"
 DIM=1024  # Qwen3-Embedding-0.6B 输出维度
@@ -64,35 +64,10 @@ echo "[3/5] creating vdb.rs database (dim=${DIM})..."
 rm -rf "${DB_DIR}"
 ./target/release/vdb create --dir "${DB_DIR}" --dim "${DIM}"
 
-# 4. 批量插入
+# 4. 批量插入（一次性写入，避免每条记录产生一个全量索引快照）
 echo
-echo "[4/5] inserting vectors..."
-python3 - "${VECTOR_FILE}" "${DB_DIR}" <<'PY'
-import json
-import subprocess
-import sys
-from pathlib import Path
-
-vector_file = sys.argv[1]
-db_dir = sys.argv[2]
-
-with open(vector_file, "r", encoding="utf-8") as f:
-    records = [json.loads(line) for line in f if line.strip()]
-
-print(f"[insert] {len(records)} records")
-for rec in records:
-    vec_str = json.dumps(rec["vector"], ensure_ascii=False)
-    payload = json.dumps({"text": rec["text"]}, ensure_ascii=False)
-    subprocess.run(
-        ["./target/release/vdb", "insert",
-         "--dir", db_dir,
-         "--vector", vec_str,
-         "--payload", payload],
-        check=True,
-        stdout=subprocess.DEVNULL,
-    )
-print("[insert] done")
-PY
+echo "[4/5] batch inserting vectors..."
+./target/release/vdb batch-insert --dir "${DB_DIR}" --file "${VECTOR_FILE}"
 
 # 5. 搜索测试
 echo

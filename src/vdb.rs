@@ -100,6 +100,37 @@ impl Database {
         Ok(id)
     }
 
+    /// 批量带 payload 插入。
+    ///
+    /// 与单条插入相比，批量插入只在内存中追加全部向量，最后一次性写入新版本，
+    /// 避免每条记录都产生一个全量索引快照，显著降低磁盘占用与写入耗时。
+    /// 返回分配的起始 id（第一条向量的 id）。
+    pub fn batch_insert_with_payload(
+        &self,
+        vectors: &[Vec<f32>],
+        payloads: Vec<Payload>,
+    ) -> std::io::Result<u64> {
+        assert_eq!(
+            vectors.len(),
+            payloads.len(),
+            "vectors and payloads length mismatch"
+        );
+        let _write_guard = self.write_lock.lock().unwrap();
+        let first_id = {
+            let mut index = self.index.write().unwrap();
+            let mut first = None;
+            for (vector, payload) in vectors.iter().zip(payloads.into_iter()) {
+                let id = index.add_with_payload(vector, payload);
+                if first.is_none() {
+                    first = Some(id);
+                }
+            }
+            first.unwrap_or(0)
+        };
+        self.save_and_bump()?;
+        Ok(first_id)
+    }
+
     /// 搜索。
     pub fn search(&self, query: &[f32], options: &SearchOptions) -> Vec<(u64, f32)> {
         let index = self.index.read().unwrap();

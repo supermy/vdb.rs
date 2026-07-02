@@ -27,7 +27,8 @@
 - `AGENTS.md`：项目代理指令与架构、质量、生产部署规则。
 - 常见使用场景示例：`examples/embedded.rs`、`examples/mmap_zero_copy.rs`、`examples/server_http.rs`、`examples/nng_client.rs`、`examples/best_performance.rs`、`examples/performance_matrix.rs`、`examples/performance_benchmark.sh`、`examples/siftsmall_benchmark.sh`、`examples/hongloumeng_rag.sh`、`examples/text_to_vectors.py`、`examples/lookup_results.py`，覆盖嵌入式、mmap 零拷贝、HTTP Server、NNG 二进制协议、最佳性能配置、自动调参 CSV 矩阵、shell 脚本批量性能测试、真实数据集 siftsmall 验证与中文文本 RAG（红楼梦）。
 - `src/sys_info.rs`：系统资源探测（CPU 核心数、物理内存）与检索参数推荐，提供 `recommend_search_options`、`recommend_num_partitions`、`recommend_mmap_cache_bytes`。
-- CLI 完整实现：`vdb create`、`vdb insert`、`vdb search`、`vdb tune`，支持 payload、SQL 过滤与自动参数推荐。
+- CLI 完整实现：`vdb create`、`vdb insert`、`vdb batch-insert`、`vdb search`、`vdb tune`，支持 payload、SQL 过滤与自动参数推荐。
+- `Database::batch_insert_with_payload`：内存中批量追加向量后一次性保存，避免逐条写入产生大量全量索引快照，显著降低磁盘占用。
 - HTTP Server 支持服务器级默认搜索参数：`--default-k`、`--default-nprobe`、`--default-refine-k`、`--default-query-bits` 等，请求体可继续覆盖；`/search` 新增 `fastscan`、`query_bits`、`sq8_refine` 字段。
 - NNG Server 支持 `--listen` 与 `--dim` 启动参数，消除硬编码地址与维度。
 - `.github/workflows/ci.yml` 新增 `release` job：在 `v*` 标签推送时自动构建 Ubuntu/macOS/Windows release 二进制并上传至 GitHub Release。

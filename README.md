@@ -378,6 +378,9 @@ cargo run --bin vdb -- search --dir ./data/mydb \
   --query "[0.1, 0.2, ..., 0.128]" \
   --k 10 --nprobe 100 --refine-k 5000
 
+# 批量插入（推荐用于生产导入，避免单条插入产生大量全量快照）
+cargo run --bin vdb -- batch-insert --dir ./data/mydb --file vectors.jsonl
+
 # SQL 过滤搜索
 cargo run --bin vdb -- search --dir ./data/mydb \
   --query "[0.1, 0.2, ..., 0.128]" \
@@ -406,7 +409,7 @@ DATASET_PREFIX=/path/to/siftsmall/siftsmall ./examples/siftsmall_benchmark.sh
 `examples/hongloumeng_rag.sh` 演示完整中文文本 RAG 流程：
 1. 读取 `../models/data/txt/红楼梦.txt`（自动处理 GBK/UTF-8 编码）；
 2. 使用本地 `Qwen3-Embedding-0.6B-Q8_0.gguf` 模型将文本块转成 1024 维向量；
-3. 通过 `vdb` CLI 创建数据库并插入带 `text` payload 的向量；
+3. 通过 `vdb` CLI 创建数据库并**批量插入**带 `text` payload 的向量；
 4. 对查询问题生成向量并在 vdb.rs 中检索 Top3，回显原文片段。
 
 ```bash
@@ -421,8 +424,12 @@ LIMIT=500 \
 ./examples/hongloumeng_rag.sh
 ```
 
+> 注意：示例默认 `LIMIT=20`，以便在 CPU 上快速跑完。`Qwen3-Embedding-0.6B` 在 CPU 上约 10 秒/块，扩大 `LIMIT` 前请确认可接受耗时。
+
+> 磁盘占用说明：本示例使用 `vdb batch-insert` 一次性写入，数据库仅包含 1 个有效版本（约 8 MB，主要由 1024×1024 旋转矩阵决定）。若使用 `vdb insert` 逐条写入，`Database::insert_with_payload` 每次都会保存一个全量索引快照，N 条记录会产生 N 个 ~4 MB 的版本文件，导致数据剧烈膨胀。生产导入请务必使用批量接口。
+
 核心辅助脚本：
-- `examples/text_to_vectors.py`：文本分块 + llama-embedding 批量生成向量；
+- `examples/text_to_vectors.py`：文本分块 + llama-embedding 分批生成向量；
 - `examples/lookup_results.py`：根据搜索 id 从向量文件反查原文。
 
 示例输出：

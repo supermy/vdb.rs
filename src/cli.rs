@@ -44,6 +44,15 @@ enum Commands {
         #[arg(long)]
         payload: Option<String>,
     },
+    /// 批量插入向量（JSONL 文件，每行 {"vector": [...], "payload": {...}}）
+    BatchInsert {
+        /// 数据库目录
+        #[arg(long)]
+        dir: PathBuf,
+        /// JSONL 文件路径
+        #[arg(long)]
+        file: PathBuf,
+    },
     /// 搜索最近邻
     Search {
         /// 数据库目录
@@ -147,6 +156,48 @@ fn run(command: Commands) -> Result<(), String> {
                 .insert_with_payload(&vector, payload)
                 .map_err(|e| e.to_string())?;
             println!("[insert] id={}", id);
+        }
+        Commands::BatchInsert { dir, file } => {
+            let records = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
+            let mut vectors = Vec::new();
+            let mut payloads = Vec::new();
+            for (line_no, line) in records.lines().enumerate() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let value: serde_json::Value =
+                    serde_json::from_str(line).map_err(|e| format!("line {}: {e}", line_no + 1))?;
+                let vector = value
+                    .get("vector")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| format!("line {}: missing vector", line_no + 1))?
+                    .iter()
+                    .map(|v| {
+                        v.as_f64()
+                            .ok_or_else(|| "vector element must be float".to_string())
+                    })
+                    .collect::<Result<Vec<f64>, _>>()
+                    .map_err(|e| format!("line {}: {e}", line_no + 1))?
+                    .into_iter()
+                    .map(|v| v as f32)
+                    .collect::<Vec<f32>>();
+                let payload = match value.get("payload") {
+                    Some(p) => parse_payload(&p.to_string())?,
+                    None => Payload::new(),
+                };
+                vectors.push(vector);
+                payloads.push(payload);
+            }
+            let db = Database::open(&dir).map_err(|e| e.to_string())?;
+            let first_id = db
+                .batch_insert_with_payload(&vectors, payloads)
+                .map_err(|e| e.to_string())?;
+            println!(
+                "[batch_insert] count={} first_id={}",
+                vectors.len(),
+                first_id
+            );
         }
         Commands::Search {
             dir,
